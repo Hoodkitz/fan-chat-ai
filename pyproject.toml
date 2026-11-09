@@ -1,0 +1,6 @@
+[project]
+name = "fan-chat-ai"
+version = "0.1.0"
+description = "AI Fan Chat SaaS for Content Creators"
+requires-python = ">=3.11"
+dependencies = ["fastapi", "uvicorn", "sqlalchemy", "asyncpg", "pydantic", "httpx", "redis", "langgraph", "pgvector"]
