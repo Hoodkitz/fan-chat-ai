@@ -1,6 +1,28 @@
 [project]
 name = "fan-chat-ai"
 version = "0.1.0"
-description = "AI Fan Chat SaaS for Content Creators"
+description = "AI Fan Chat Automation for Erotikmodels"
 requires-python = ">=3.11"
-dependencies = ["fastapi", "uvicorn", "sqlalchemy", "asyncpg", "pydantic", "httpx", "redis", "langgraph", "pgvector"]
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy[asyncio]",
+    "asyncpg",
+    "pydantic[dotenv]",
+    "python-jose[cryptography]",
+    "passlib[bcrypt]",
+    "httpx",
+    "redis",
+    "python-multipart",
+    "python-dotenv",
+    "alembic",
+    "langchain",
+    "langchain-community",
+    "pgvector",
+    "sentence-transformers",
+    "openai",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
