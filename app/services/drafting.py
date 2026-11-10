@@ -44,7 +44,7 @@ PERSONA: {_clip(profile.persona, 800)}
 FAN: {wrap_untrusted('nickname', fan.nickname or 'Fan')}; Vorlieben: {_clip(fan.preferences, 300)}; Notizen: {_clip(fan.notes, 300)};
 Käufe: {buys}
 ERINNERUNGEN AN DEN FAN:
-{mem}
+{wrap_untrusted('erinnerungen', mem)}
 
 VERLAUF:
 {wrap_untrusted('verlauf', hist or '(noch keiner)')}

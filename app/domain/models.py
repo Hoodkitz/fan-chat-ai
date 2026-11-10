@@ -6,7 +6,6 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
-    Computed,
     Date,
     DateTime,
     ForeignKey,
@@ -14,7 +13,6 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
-    Text,
     UniqueConstraint,
     func,
 )
@@ -141,16 +139,16 @@ class Draft(Base):
 
 
 class MemoryFact(Base):
-    """Long-term memory about a fan (PII-redacted, searchable). Not encrypted on purpose:
-    the lexical index needs plain text, so PII is stripped before insert."""
+    """Long-term memory about a fan. The text is PII-redacted before insert and encrypted at rest;
+    only the lexical index (stemmed lexemes of the redacted text) and the embedding stay searchable."""
     __tablename__ = "memory_facts"
     id = Column(UUID(as_uuid=True), primary_key=True, default=_id)
     tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     fan_id = Column(UUID(as_uuid=True), ForeignKey("fans.id", ondelete="CASCADE"), nullable=False, index=True)
-    fact = Column(Text, nullable=False)
+    fact = Column(EncryptedText, nullable=False)
     source = Column(String(20), nullable=False, default="manual")  # manual | chat
     embedding = Column(JSONB, nullable=True)                        # list[float] from EmbeddingPort
-    tsv = Column(TSVECTOR, Computed("to_tsvector('german', fact)", persisted=True))
+    tsv = Column(TSVECTOR, nullable=False)                          # to_tsvector('german', redacted fact)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     __table_args__ = (Index("ix_memory_facts_tsv", "tsv", postgresql_using="gin"),)
 

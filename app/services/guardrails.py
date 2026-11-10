@@ -51,5 +51,5 @@ def output_violations(draft: str, allow_contact: bool = False) -> list[str]:
 
 def wrap_untrusted(label: str, text: str) -> str:
     """Mark data segments so the model treats them as content, never as instructions."""
-    clean = (text or "").replace("<untrusted", "<_untrusted").replace("</untrusted", "</_untrusted")
+    clean = (text or "").replace("<", "‹").replace(">", "›")  # no tag can be forged inside the block
     return f"<untrusted source=\"{label}\">\n{clean}\n</untrusted>"

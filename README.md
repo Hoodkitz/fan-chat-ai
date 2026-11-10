@@ -46,7 +46,7 @@ werden eskaliert: Dafür erzeugt die KI keinen Text, die Creatorin antwortet sel
 | Dashboard | `/stats` |
 | Portale | Adapter-Interface, nur offizielle Wege; `manual` liefert Text zum Kopieren. Eingang: `POST /inbox/events` (Connector, authentifiziert) oder `POST /webhooks/{tenant_id}` (HMAC-SHA256 über den Body, Secret via `POST /profile/webhook-secret`); beides exactly-once über die `webhook_inbox` (UNIQUE event_id, Duplikat → 200 + `duplicate: true`) |
 | Chat-Import | `POST /fans/import`: exportierte Verläufe je Portal/Fan, ohne Entwürfe; setzt letzten Kontakt, lernt Fakten |
-| Langzeitgedächtnis | `memory_facts` je Fan (PII-redaktiert, kein Klartext-PII im Index): automatisch aus Fan-Nachrichten extrahiert + manuell (`/fans/{id}/facts`); hybride Suche tsvector (german) + Embedding-Port (Hashing-Fake) mit Reciprocal Rank Fusion (k=60), `GET /fans/{id}/facts?q=` |
+| Langzeitgedächtnis | `memory_facts` je Fan (Text PII-redaktiert und verschlüsselt; im Klartext nur Lexeme des tsvector + Embedding; Fakten mit Injektionsmustern werden verworfen): automatisch aus Fan-Nachrichten extrahiert + manuell (`/fans/{id}/facts`); hybride Suche tsvector (german) + Embedding-Port (Hashing-Fake) mit Reciprocal Rank Fusion (k=60), `GET /fans/{id}/facts?q=` |
 | PII-Redaktion | `app/services/pii.py`: E-Mail, Telefon, IBAN, Kartennummer (Luhn) → Platzhalter, vor Index und Prompt |
 | Guardrails | `app/services/guardrails.py`: Input-Rail (Injektionsmuster in Nachricht/Nickname → Eskalation), Fan-Daten im Prompt als `<untrusted>` markiert; Output-Rail (Link, „bin kein Bot“, Gratis, Kontaktdaten/Plattformwechsel → Entwurf blockiert, Creatorin schreibt selbst) |
 | Statistiken | `/stats` zusätzlich je Portal: Fans, Umsatz, Nachrichten ein/aus |
