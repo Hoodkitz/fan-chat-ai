@@ -25,3 +25,35 @@ Amateur-Erotikmodels, Content Creator, Agenturen
 ## Monetarisierung
 - Monatliches Abo pro Model
 - Enterprise für Agenturen (mehrere Models)
+
+---
+
+# Umsetzung (v0.1, MVP)
+
+**Prinzip: Assistenz statt Täuschung.** Die KI schreibt Entwürfe im Stil der Creatorin. Gesendet wird nur,
+was sie selbst freigibt, und jede KI-unterstützte Nachricht trägt einen sichtbaren Hinweis
+(`AI_DISCLOSURE`, EU AI Act Art. 50). Fragen wie "Bist du ein Bot?", Treffen, Adressen, Grenzthemen und Top-Fans
+werden eskaliert: Dafür erzeugt die KI keinen Text, die Creatorin antwortet selbst.
+
+| Blueprint-Funktion | Umsetzung |
+|---|---|
+| Chat-Analyse / Tonalität | `POST /profile/learn-style`: Statistik aus eigenen Nachrichten (Länge, Emojis, Anrede, Wörter, Beispiele) |
+| Fan-Datenbank | `/fans` (+ Käufe, Verlauf, Geburtstag, Kontaktsperre); sensible Felder verschlüsselt (Fernet) |
+| Model-Datenbank | `/profile` (Persona, Grenzen, Preise, Eskalations-Stichwörter, Top-Fan-Schwelle) |
+| Antworten | eingehende Nachricht → Entwurf (RAG aus Profil, Fan, Verlauf, Käufen) → `/drafts/{id}/decision` → `/send` |
+| Kontaktpflege | `POST /outreach/generate`: Entwürfe zu Geburtstagen und Funkstille, keine Duplikate |
+| Eskalation | `app/services/rules.py` |
+| Dashboard | `/stats` |
+| Portale | Adapter-Interface, nur offizielle Wege; `manual` liefert Text zum Kopieren |
+
+Sicherheit: Multi-Tenant mit PostgreSQL FORCE RLS, App-Rolle ohne SUPERUSER/BYPASSRLS, Argon2id, JWT mit Widerruf,
+nur die Creatorin (Rolle owner) darf freigeben, Audit-Log, Löschen eines Fans entfernt alles (DSGVO).
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env && .venv/bin/alembic upgrade head
+.venv/bin/uvicorn app.api.main:app --reload
+LLM_PROVIDER=fake .venv/bin/pytest -q      # 13 Tests
+```
+
+Offen: Web-Dashboard, offizielle Portal-APIs (je nach Portal), Export/Import von Chat-Verläufen je Portal.
