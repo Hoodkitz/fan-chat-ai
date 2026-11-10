@@ -1,26 +1,46 @@
 """Fan Chat AI – assistant for creators: drafts replies in her style; she decides what is sent."""
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Literal, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import Ctx, ctx, editor, owner
 from app.core.config import settings
 from app.core.db import new_session, set_context
+from app.core.db import new_session as _new_session
 from app.core.password import hash_password, validate_password_strength, verify_password
 from app.core.tokens import create_token
-from app.domain.models import (AuditLog, CreatorProfile, Draft, DraftStatus, Fan, Membership, Message, Purchase,
-                               Tenant, User)
+from app.domain.models import (
+    AuditLog,
+    CreatorProfile,
+    Draft,
+    DraftStatus,
+    Fan,
+    Membership,
+    MemoryFact,
+    Message,
+    Purchase,
+    Tenant,
+    User,
+    WebhookInbox,
+)
 from app.services.drafting import create_outreach_drafts, create_reply_draft
+from app.services.memory import add_fact, remember_from_message
 from app.services.portals import adapter_for
+from app.services.retrieval import search_facts
 from app.services.style import analyze_style
 
-app = FastAPI(title="Fan Chat AI", version="0.1.0")
+app = FastAPI(title="Fan Chat AI", version="0.2.0")
 
 
 def audit(c: Ctx, action: str, target: str | None = None):
@@ -231,11 +251,179 @@ def add_message(fan_id: str, req: MessageIn, c: Ctx = Depends(editor)):
     c.db.add(m)
     c.db.flush()
     draft = None
-    if req.direction == "in" and req.create_draft:
-        draft = _draft_out(create_reply_draft(c.db, c.tenant_id, f, req.body))
+    if req.direction == "in":
+        remember_from_message(c.db, c.tenant_id, f.id, req.body)
+        if req.create_draft:
+            draft = _draft_out(create_reply_draft(c.db, c.tenant_id, f, req.body))
     else:
         f.last_contact_at = req.sent_at or datetime.now(timezone.utc)
     return {"message_id": m.id, "draft": draft}
+
+
+# ---------- long-term memory ----------
+class FactIn(BaseModel):
+    fact: str = Field(min_length=2, max_length=300)
+
+
+def _fact_out(x: MemoryFact) -> dict:
+    return {"id": str(x.id), "fan_id": str(x.fan_id), "fact": x.fact, "source": x.source, "created_at": x.created_at}
+
+
+@app.post("/fans/{fan_id}/facts", status_code=201)
+def add_fan_fact(fan_id: str, req: FactIn, c: Ctx = Depends(editor)):
+    f = _fan(c, fan_id)
+    x = add_fact(c.db, c.tenant_id, f.id, req.fact, "manual")
+    if x is None:
+        raise HTTPException(409, "Fakt existiert bereits oder ist leer nach PII-Redaktion")
+    return _fact_out(x)
+
+
+@app.get("/fans/{fan_id}/facts")
+def list_fan_facts(fan_id: str, q: Optional[str] = None, c: Ctx = Depends(ctx)):
+    f = _fan(c, fan_id)
+    if q:
+        return [_fact_out(x) for x in search_facts(c.db, f.id, q, limit=10)]
+    return [_fact_out(x) for x in c.db.query(MemoryFact).filter(MemoryFact.fan_id == f.id).order_by(MemoryFact.created_at)]
+
+
+@app.delete("/fans/{fan_id}/facts/{fact_id}", status_code=204)
+def delete_fan_fact(fan_id: str, fact_id: str, c: Ctx = Depends(editor)):
+    f = _fan(c, fan_id)
+    try:
+        x = c.db.get(MemoryFact, uuid.UUID(fact_id))
+    except ValueError:
+        x = None
+    if x is None or x.fan_id != f.id:
+        raise HTTPException(404, "Fakt nicht gefunden")
+    c.db.delete(x)
+
+
+# ---------- portal inbox: official webhooks / exports only ----------
+class InboundEvent(BaseModel):
+    portal: str = Field(min_length=1, max_length=40)
+    event_id: str = Field(min_length=1, max_length=200)
+    portal_user_id: str = Field(min_length=1, max_length=200)
+    nickname: Optional[str] = Field(default=None, max_length=120)
+    text: str = Field(min_length=1, max_length=5000)
+    sent_at: Optional[datetime] = None
+
+
+def _ingest_event(db, tenant_id, ev: InboundEvent) -> dict:
+    """Exactly-once processing: the inbox row is the lock; a duplicate event id is acknowledged."""
+    inbox = WebhookInbox(tenant_id=tenant_id, portal=ev.portal, event_id=ev.event_id)
+    db.add(inbox)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        return {"duplicate": True, "event_id": ev.event_id}
+    fan = db.query(Fan).filter(Fan.tenant_id == tenant_id, Fan.portal == ev.portal,
+                               Fan.portal_user_id == ev.portal_user_id).one_or_none()
+    if fan is None:
+        fan = Fan(tenant_id=tenant_id, portal=ev.portal, portal_user_id=ev.portal_user_id, nickname=ev.nickname,
+                  total_spent=0)
+        db.add(fan)
+        db.flush()
+    m = Message(tenant_id=tenant_id, fan_id=fan.id, direction="in", body=ev.text, ai_assisted=False)
+    if ev.sent_at:
+        m.sent_at = ev.sent_at
+    db.add(m)
+    db.flush()
+    remember_from_message(db, tenant_id, fan.id, ev.text)
+    d = create_reply_draft(db, tenant_id, fan, ev.text)
+    inbox.processed_at = datetime.now(timezone.utc)
+    return {"duplicate": False, "event_id": ev.event_id, "fan_id": str(fan.id), "draft": _draft_out(d)}
+
+
+@app.post("/inbox/events")
+def inbox_event(ev: InboundEvent, c: Ctx = Depends(editor)):
+    """Authenticated ingestion (e.g. from a connector that polls an official portal API)."""
+    return _ingest_event(c.db, c.tenant_id, ev)
+
+
+@app.post("/profile/webhook-secret")
+def rotate_webhook_secret(c: Ctx = Depends(owner)):
+    p = c.db.get(CreatorProfile, c.tenant_id)
+    p.webhook_secret = secrets.token_urlsafe(32)
+    audit(c, "profile.webhook_secret_rotated")
+    return {"webhook_url": f"/webhooks/{c.tenant_id}", "secret": p.webhook_secret}
+
+
+@app.post("/webhooks/{tenant_id}")
+async def portal_webhook(tenant_id: str, request: Request, x_signature: str = Header(default="")):
+    """Unauthenticated portal webhook, protected by HMAC-SHA256 over the raw body."""
+    try:
+        tid = uuid.UUID(tenant_id)
+    except ValueError:
+        raise HTTPException(404, "Unbekannt")
+    raw = await request.body()
+    db = _new_session(tid)
+    try:
+        p = db.get(CreatorProfile, tid)
+        if p is None or not p.webhook_secret:
+            raise HTTPException(404, "Unbekannt")
+        expected = hmac.new(p.webhook_secret.encode(), raw, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, (x_signature or "").lower().removeprefix("sha256=")):
+            raise HTTPException(401, "Signatur ungültig")
+        ev = InboundEvent.model_validate_json(raw)
+        out = _ingest_event(db, tid, ev)
+        db.commit()
+        return out
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(422, str(e)[:200])
+    finally:
+        db.close()
+
+
+class ImportMessage(BaseModel):
+    direction: Literal["in", "out"]
+    body: str = Field(min_length=1, max_length=5000)
+    sent_at: Optional[datetime] = None
+
+
+class ImportFan(BaseModel):
+    portal: str = Field(min_length=1, max_length=40)
+    portal_user_id: str = Field(min_length=1, max_length=200)
+    nickname: Optional[str] = Field(default=None, max_length=120)
+    messages: list[ImportMessage] = Field(default_factory=list, max_length=5000)
+
+
+class ImportIn(BaseModel):
+    fans: list[ImportFan] = Field(max_length=2000)
+
+
+@app.post("/fans/import")
+def import_chats(req: ImportIn, c: Ctx = Depends(editor)):
+    """Import of exported chat histories (official portal exports). No drafts are created."""
+    created_fans = created_msgs = 0
+    for item in req.fans:
+        fan = c.db.query(Fan).filter(Fan.tenant_id == c.tenant_id, Fan.portal == item.portal,
+                                     Fan.portal_user_id == item.portal_user_id).one_or_none()
+        if fan is None:
+            fan = Fan(tenant_id=c.tenant_id, portal=item.portal, portal_user_id=item.portal_user_id,
+                      nickname=item.nickname, total_spent=0)
+            c.db.add(fan)
+            c.db.flush()
+            created_fans += 1
+        last_out = None
+        for mi in item.messages:
+            m = Message(tenant_id=c.tenant_id, fan_id=fan.id, direction=mi.direction, body=mi.body, ai_assisted=False)
+            if mi.sent_at:
+                m.sent_at = mi.sent_at
+            c.db.add(m)
+            created_msgs += 1
+            if mi.direction == "in":
+                remember_from_message(c.db, c.tenant_id, fan.id, mi.body)
+            elif mi.sent_at and (last_out is None or mi.sent_at > last_out):
+                last_out = mi.sent_at
+        if last_out and (fan.last_contact_at is None or last_out > fan.last_contact_at):
+            fan.last_contact_at = last_out
+    audit(c, "fans.imported", f"{created_fans} fans, {created_msgs} messages")
+    return {"fans_created": created_fans, "messages_imported": created_msgs}
 
 
 # ---------- drafts ----------
@@ -318,9 +506,21 @@ def stats(c: Ctx = Depends(ctx)):
     for d in q:
         by[d.status] = by.get(d.status, 0) + 1
     fans = c.db.query(Fan).filter(Fan.tenant_id == c.tenant_id).all()
+    per_portal: dict[str, dict] = {}
+    for f in fans:
+        p = per_portal.setdefault(f.portal, {"fans": 0, "revenue": 0.0, "messages_in": 0, "messages_out": 0})
+        p["fans"] += 1
+        p["revenue"] += float(f.total_spent or 0)
+    fan_portal = {f.id: f.portal for f in fans}
+    for fan_id, direction, n in c.db.query(Message.fan_id, Message.direction, func.count()).filter(
+            Message.tenant_id == c.tenant_id).group_by(Message.fan_id, Message.direction):
+        p = per_portal.get(fan_portal.get(fan_id))
+        if p is not None:
+            p["messages_in" if direction == "in" else "messages_out"] += n
     return {"fans": len(fans), "revenue": float(sum((f.total_spent or 0) for f in fans)), "drafts": by,
             "top_fans": sorted(({"nickname": f.nickname, "total_spent": float(f.total_spent or 0)} for f in fans),
-                               key=lambda x: -x["total_spent"])[:5]}
+                               key=lambda x: -x["total_spent"])[:5],
+            "per_portal": per_portal}
 
 
 @app.get("/healthz")

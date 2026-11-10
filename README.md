@@ -28,7 +28,7 @@ Amateur-Erotikmodels, Content Creator, Agenturen
 
 ---
 
-# Umsetzung (v0.1, MVP)
+# Umsetzung (v0.2, MVP + S3)
 
 **Prinzip: Assistenz statt Täuschung.** Die KI schreibt Entwürfe im Stil der Creatorin. Gesendet wird nur,
 was sie selbst freigibt, und jede KI-unterstützte Nachricht trägt einen sichtbaren Hinweis
@@ -44,7 +44,12 @@ werden eskaliert: Dafür erzeugt die KI keinen Text, die Creatorin antwortet sel
 | Kontaktpflege | `POST /outreach/generate`: Entwürfe zu Geburtstagen und Funkstille, keine Duplikate |
 | Eskalation | `app/services/rules.py` |
 | Dashboard | `/stats` |
-| Portale | Adapter-Interface, nur offizielle Wege; `manual` liefert Text zum Kopieren |
+| Portale | Adapter-Interface, nur offizielle Wege; `manual` liefert Text zum Kopieren. Eingang: `POST /inbox/events` (Connector, authentifiziert) oder `POST /webhooks/{tenant_id}` (HMAC-SHA256 über den Body, Secret via `POST /profile/webhook-secret`); beides exactly-once über die `webhook_inbox` (UNIQUE event_id, Duplikat → 200 + `duplicate: true`) |
+| Chat-Import | `POST /fans/import`: exportierte Verläufe je Portal/Fan, ohne Entwürfe; setzt letzten Kontakt, lernt Fakten |
+| Langzeitgedächtnis | `memory_facts` je Fan (PII-redaktiert, kein Klartext-PII im Index): automatisch aus Fan-Nachrichten extrahiert + manuell (`/fans/{id}/facts`); hybride Suche tsvector (german) + Embedding-Port (Hashing-Fake) mit Reciprocal Rank Fusion (k=60), `GET /fans/{id}/facts?q=` |
+| PII-Redaktion | `app/services/pii.py`: E-Mail, Telefon, IBAN, Kartennummer (Luhn) → Platzhalter, vor Index und Prompt |
+| Guardrails | `app/services/guardrails.py`: Input-Rail (Injektionsmuster in Nachricht/Nickname → Eskalation), Fan-Daten im Prompt als `<untrusted>` markiert; Output-Rail (Link, „bin kein Bot“, Gratis, Kontaktdaten/Plattformwechsel → Entwurf blockiert, Creatorin schreibt selbst) |
+| Statistiken | `/stats` zusätzlich je Portal: Fans, Umsatz, Nachrichten ein/aus |
 
 Sicherheit: Multi-Tenant mit PostgreSQL FORCE RLS, App-Rolle ohne SUPERUSER/BYPASSRLS, Argon2id, JWT mit Widerruf,
 nur die Creatorin (Rolle owner) darf freigeben, Audit-Log, Löschen eines Fans entfernt alles (DSGVO).
@@ -53,7 +58,11 @@ nur die Creatorin (Rolle owner) darf freigeben, Audit-Log, Löschen eines Fans e
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env && .venv/bin/alembic upgrade head
 .venv/bin/uvicorn app.api.main:app --reload
-LLM_PROVIDER=fake .venv/bin/pytest -q      # 13 Tests
+LLM_PROVIDER=fake .venv/bin/pytest -q      # 24 Tests
 ```
 
-Offen: Web-Dashboard, offizielle Portal-APIs (je nach Portal), Export/Import von Chat-Verläufen je Portal.
+Abweichungen zur Spezifikation (bewusst, MVP): kein pgvector/HNSW (Embedding als JSONB + Cosine in Python, Port austauschbar),
+kein Cross-Encoder-Reranking, keine Redis-Locks (Idempotenz über DB-UNIQUE), kein LangGraph (Draft→Decision→Send ist die State-Machine),
+Discord-Sharding/Telegram-Local-API nicht enthalten. Alles davon hinter Ports, siehe `nexussaas/projects/03-fan-chat-ai.md`.
+
+Offen: Web-Dashboard, konkrete Portal-Connectoren (nur offizielle APIs), echtes Embedding-Modell + Reranker.

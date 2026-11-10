@@ -2,8 +2,23 @@
 import enum
 import uuid
 
-from sqlalchemy import (BigInteger, Boolean, Column, Date, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, func)
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    Computed,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 
 from app.core.crypto import EncryptedText
 from app.core.db import Base
@@ -64,6 +79,7 @@ class CreatorProfile(Base):
     high_value_threshold = Column(Numeric(10, 2), nullable=False, default=100)
     style = Column(JSONB, nullable=True)                      # learned writing style
     auto_outreach_days = Column(Integer, nullable=False, default=14)
+    webhook_secret = Column(EncryptedText, nullable=True)       # HMAC secret for portal webhooks
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
@@ -124,6 +140,33 @@ class Draft(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class MemoryFact(Base):
+    """Long-term memory about a fan (PII-redacted, searchable). Not encrypted on purpose:
+    the lexical index needs plain text, so PII is stripped before insert."""
+    __tablename__ = "memory_facts"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=_id)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    fan_id = Column(UUID(as_uuid=True), ForeignKey("fans.id", ondelete="CASCADE"), nullable=False, index=True)
+    fact = Column(Text, nullable=False)
+    source = Column(String(20), nullable=False, default="manual")  # manual | chat
+    embedding = Column(JSONB, nullable=True)                        # list[float] from EmbeddingPort
+    tsv = Column(TSVECTOR, Computed("to_tsvector('german', fact)", persisted=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (Index("ix_memory_facts_tsv", "tsv", postgresql_using="gin"),)
+
+
+class WebhookInbox(Base):
+    """Idempotency inbox: one row per portal event id; duplicates are acknowledged and ignored."""
+    __tablename__ = "webhook_inbox"
+    __table_args__ = (UniqueConstraint("tenant_id", "portal", "event_id"),)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    portal = Column(String(40), nullable=False)
+    event_id = Column(String(200), nullable=False)
+    received_at = Column(DateTime(timezone=True), server_default=func.now())
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -134,4 +177,5 @@ class AuditLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
-TENANT_TABLES = ["creator_profiles", "fans", "purchases", "messages", "drafts", "audit_log"]
+TENANT_TABLES = ["creator_profiles", "fans", "purchases", "messages", "drafts", "audit_log", "memory_facts",
+                 "webhook_inbox"]
