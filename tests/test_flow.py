@@ -165,3 +165,10 @@ def test_prompt_contains_guardrails(acc, fan):
         assert "Behaupte niemals, ein Mensch zu" in seen["p"] and "liebt Yoga" in seen["p"]
     finally:
         llm.set_llm(llm.FakeLLM())
+
+
+def test_partial_update_keeps_contact_block(acc, fan):
+    a = acc()
+    f = fan(a, do_not_contact=True)
+    r = a.c.patch(f"/fans/{f['id']}", headers=a.h, json={"notes": "neu"})
+    assert r.status_code == 200 and r.json()["do_not_contact"] is True and r.json()["notes"] == "neu"

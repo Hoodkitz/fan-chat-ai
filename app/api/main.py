@@ -171,10 +171,25 @@ def get_fan(fan_id: str, c: Ctx = Depends(ctx)):
                                          "sent_at": m.sent_at} for m in msgs[-100:]]}
 
 
+class FanUpdate(BaseModel):
+    nickname: Optional[str] = Field(default=None, max_length=120)
+    real_name: Optional[str] = Field(default=None, max_length=200)
+    preferences: Optional[str] = Field(default=None, max_length=3000)
+    notes: Optional[str] = Field(default=None, max_length=3000)
+    birthday: Optional[date] = None
+    do_not_contact: Optional[bool] = None
+
+
 @app.patch("/fans/{fan_id}")
-def update_fan(fan_id: str, req: FanIn, c: Ctx = Depends(editor)):
+def update_fan(fan_id: str, req: FanUpdate, c: Ctx = Depends(editor)):
+    """Partial update. Lifting a contact block is an explicit, audited owner decision."""
     f = _fan(c, fan_id)
-    for k, v in req.model_dump().items():
+    data = req.model_dump(exclude_unset=True)
+    if f.do_not_contact and data.get("do_not_contact") is False:
+        if c.role != "owner":
+            raise HTTPException(403, "Nur die Creatorin kann eine Kontaktsperre aufheben")
+        audit(c, "fan.contact_block_lifted", fan_id)
+    for k, v in data.items():
         setattr(f, k, v)
     return _fan_out(f)
 
