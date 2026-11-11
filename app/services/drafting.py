@@ -41,7 +41,7 @@ Emojis/Nachricht {style.get('emoji_per_message', 1)}, typische Emojis {style.get
 typische Wörter {style.get('frequent_words', [])}. Beispiele: {style.get('examples', [])}
 
 PERSONA: {_clip(profile.persona, 800)}
-FAN: {wrap_untrusted('nickname', fan.nickname or 'Fan')}; Vorlieben: {_clip(fan.preferences, 300)}; Notizen: {_clip(fan.notes, 300)};
+FAN: {wrap_untrusted('nickname', fan.nickname or 'Fan')}; Vorlieben: {_clip(redact(fan.preferences)[0], 300)}; Notizen: {_clip(redact(fan.notes)[0], 300)};
 Käufe: {buys}
 ERINNERUNGEN AN DEN FAN:
 {wrap_untrusted('erinnerungen', mem)}
@@ -59,6 +59,8 @@ def create_reply_draft(db: Session, tenant_id, fan: Fan, incoming_text: str) -> 
     profile = db.get(CreatorProfile, tenant_id)
     reason = escalation_reason(incoming_text, profile.escalation_keywords or [], profile.boundaries or [],
                                fan.total_spent or 0, profile.high_value_threshold)
+    if fan.do_not_contact:
+        reason = "Kontaktsperre aktiv – kein Entwurf"
     if not reason:
         inj = input_violations(incoming_text, fan.nickname or "")
         if inj:

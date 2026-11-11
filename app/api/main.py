@@ -311,11 +311,11 @@ class InboundEvent(BaseModel):
 def _ingest_event(db, tenant_id, ev: InboundEvent) -> dict:
     """Exactly-once processing: the inbox row is the lock; a duplicate event id is acknowledged."""
     inbox = WebhookInbox(tenant_id=tenant_id, portal=ev.portal, event_id=ev.event_id)
-    db.add(inbox)
     try:
-        db.flush()
+        with db.begin_nested():
+            db.add(inbox)
+            db.flush()
     except IntegrityError:
-        db.rollback()
         return {"duplicate": True, "event_id": ev.event_id}
     fan = db.query(Fan).filter(Fan.tenant_id == tenant_id, Fan.portal == ev.portal,
                                Fan.portal_user_id == ev.portal_user_id).one_or_none()
@@ -323,7 +323,12 @@ def _ingest_event(db, tenant_id, ev: InboundEvent) -> dict:
         fan = Fan(tenant_id=tenant_id, portal=ev.portal, portal_user_id=ev.portal_user_id, nickname=ev.nickname,
                   total_spent=0)
         db.add(fan)
-        db.flush()
+        try:
+            with db.begin_nested():
+                db.flush()
+        except IntegrityError:  # concurrent event created the fan first
+            fan = db.query(Fan).filter(Fan.tenant_id == tenant_id, Fan.portal == ev.portal,
+                                       Fan.portal_user_id == ev.portal_user_id).one()
     m = Message(tenant_id=tenant_id, fan_id=fan.id, direction="in", body=ev.text, ai_assisted=False)
     if ev.sent_at:
         m.sent_at = ev.sent_at
@@ -389,17 +394,23 @@ class ImportFan(BaseModel):
     portal: str = Field(min_length=1, max_length=40)
     portal_user_id: str = Field(min_length=1, max_length=200)
     nickname: Optional[str] = Field(default=None, max_length=120)
-    messages: list[ImportMessage] = Field(default_factory=list, max_length=5000)
+    messages: list[ImportMessage] = Field(default_factory=list, max_length=2000)
 
 
 class ImportIn(BaseModel):
-    fans: list[ImportFan] = Field(max_length=2000)
+    fans: list[ImportFan] = Field(max_length=200)
+
+
+MAX_IMPORT_MESSAGES = 20000
 
 
 @app.post("/fans/import")
 def import_chats(req: ImportIn, c: Ctx = Depends(editor)):
-    """Import of exported chat histories (official portal exports). No drafts are created."""
-    created_fans = created_msgs = 0
+    """Import of exported chat histories (official portal exports). No drafts are created.
+    Re-importing the same export is idempotent: messages already present (direction, time, text) are skipped."""
+    if sum(len(f.messages) for f in req.fans) > MAX_IMPORT_MESSAGES:
+        raise HTTPException(413, f"Maximal {MAX_IMPORT_MESSAGES} Nachrichten pro Import")
+    created_fans = created_msgs = skipped = 0
     for item in req.fans:
         fan = c.db.query(Fan).filter(Fan.tenant_id == c.tenant_id, Fan.portal == item.portal,
                                      Fan.portal_user_id == item.portal_user_id).one_or_none()
@@ -410,7 +421,11 @@ def import_chats(req: ImportIn, c: Ctx = Depends(editor)):
             c.db.flush()
             created_fans += 1
         last_out = None
+        existing = {(m.direction, m.sent_at, m.body) for m in c.db.query(Message).filter(Message.fan_id == fan.id)}
         for mi in item.messages:
+            if mi.sent_at and (mi.direction, mi.sent_at, mi.body) in existing:
+                skipped += 1
+                continue
             m = Message(tenant_id=c.tenant_id, fan_id=fan.id, direction=mi.direction, body=mi.body, ai_assisted=False)
             if mi.sent_at:
                 m.sent_at = mi.sent_at
@@ -422,8 +437,8 @@ def import_chats(req: ImportIn, c: Ctx = Depends(editor)):
                 last_out = mi.sent_at
         if last_out and (fan.last_contact_at is None or last_out > fan.last_contact_at):
             fan.last_contact_at = last_out
-    audit(c, "fans.imported", f"{created_fans} fans, {created_msgs} messages")
-    return {"fans_created": created_fans, "messages_imported": created_msgs}
+    audit(c, "fans.imported", f"{created_fans} fans, {created_msgs} messages, {skipped} skipped")
+    return {"fans_created": created_fans, "messages_imported": created_msgs, "messages_skipped": skipped}
 
 
 # ---------- drafts ----------

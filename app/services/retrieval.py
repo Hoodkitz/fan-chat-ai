@@ -53,6 +53,8 @@ def set_embedding(e: EmbeddingPort) -> None:
 
 
 def cosine(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):  # dimension mismatch (e.g. embedding model changed) -> no match
+        return 0.0
     return sum(x * y for x, y in zip(a, b))
 
 

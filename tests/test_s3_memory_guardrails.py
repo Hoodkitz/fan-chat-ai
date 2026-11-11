@@ -142,11 +142,44 @@ def test_import_and_per_portal_stats(acc):
         {"portal": "portalB", "portal_user_id": "y1", "messages": [{"direction": "in", "body": "hi"}]},
     ]}
     r = a.post("/fans/import", json=payload).json()
-    assert r == {"fans_created": 2, "messages_imported": 3}
+    assert r["fans_created"] == 2 and r["messages_imported"] == 3
     assert a.post("/fans/import", json=payload).json()["fans_created"] == 0
     assert a.get("/drafts").json() == []  # imports never create drafts
     fans = {f["portal"]: f for f in a.get("/fans").json()}
     assert fans["portalA"]["last_contact_at"].startswith("2026-01-02")
     assert any("Berge" in x["fact"] for x in a.get(f"/fans/{fans['portalA']['id']}/facts").json())
     s = a.get("/stats").json()["per_portal"]
-    assert s["portalA"]["messages_in"] == 2 and s["portalA"]["messages_out"] == 2 and s["portalB"]["fans"] == 1
+    assert s["portalA"]["messages_in"] == 1 and s["portalA"]["messages_out"] == 1 and s["portalB"]["fans"] == 1
+
+
+def test_blocked_fan_gets_no_draft_and_notes_are_redacted(acc, fan):
+    seen = {}
+
+    class Spy(llm.LLM):
+        def draft(self, prompt):
+            seen["p"] = prompt
+            return "ok"
+
+    llm.set_llm(Spy())
+    try:
+        a = acc()
+        blocked = fan(a, do_not_contact=True)
+        d = a.post(f"/fans/{blocked['id']}/messages", json={"direction": "in", "body": "Hi"}).json()["draft"]
+        assert d["status"] == "escalated" and "Kontaktsperre" in d["escalation_reason"] and "p" not in seen
+        f = fan(a, notes="erreichbar unter 0171 2345678", preferences="mail a@b.de")
+        a.post(f"/fans/{f['id']}/messages", json={"direction": "in", "body": "Hallo"})
+        assert "2345678" not in seen["p"] and "a@b.de" not in seen["p"] and "<PHONE>" in seen["p"]
+    finally:
+        llm.set_llm(llm.FakeLLM())
+
+
+def test_import_is_idempotent(acc):
+    a = acc()
+    payload = {"fans": [{"portal": "p", "portal_user_id": "z1", "messages": [
+        {"direction": "in", "body": "hallo", "sent_at": "2026-02-01T10:00:00Z"},
+        {"direction": "out", "body": "hi", "sent_at": "2026-02-01T10:01:00Z"}]}]}
+    assert a.post("/fans/import", json=payload).json()["messages_imported"] == 2
+    r = a.post("/fans/import", json=payload).json()
+    assert r["messages_imported"] == 0 and r["messages_skipped"] == 2
+    fid = a.get("/fans").json()[0]["id"]
+    assert len(a.get(f"/fans/{fid}").json()["messages"]) == 2
