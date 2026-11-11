@@ -144,6 +144,7 @@ def login(req: LoginIn):
             if n > MAX_FAILED_LOGINS:  # parallel guesses raced past the limit: lock (expires, counter restarts)
                 db.execute(update(User).where(User.id == user.id).values(locked_until=func.now() + timedelta(minutes=15)))
                 db.commit()
+                verify_password(req.password, None)  # equal timing
                 raise denied
         if not verify_password(req.password, user.hashed_password if user else None):
             if user is not None and n >= MAX_FAILED_LOGINS:  # that was the last allowed failure
