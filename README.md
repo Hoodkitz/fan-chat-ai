@@ -59,11 +59,13 @@ nur die Creatorin (Rolle owner) darf freigeben, Audit-Log, Löschen eines Fans e
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env && .venv/bin/alembic upgrade head
 .venv/bin/uvicorn app.api.main:app --reload
-LLM_PROVIDER=fake .venv/bin/pytest -q      # 30 Tests
+LLM_PROVIDER=fake .venv/bin/pytest -q      # 31 Tests
 ```
 
 Abweichungen zur Spezifikation (bewusst, MVP): kein pgvector/HNSW (Embedding als JSONB + Cosine in Python, Port austauschbar),
 kein Cross-Encoder-Reranking, keine Redis-Locks (Idempotenz über DB-UNIQUE), kein LangGraph (Draft→Decision→Send ist die State-Machine),
 Discord-Sharding/Telegram-Local-API nicht enthalten. Alles davon hinter Ports, siehe `nexussaas/projects/03-fan-chat-ai.md`.
 
-Offen: konkrete Portal-Connectoren (nur offizielle APIs), echtes Embedding-Modell + Reranker, PWA/Push für das Dashboard.
+Dashboard ist als PWA installierbar (`/app/manifest.webmanifest`, Service Worker cached nur die Shell, nie API-Daten; lokale Benachrichtigung bei neuen Entwürfen).
+
+Offen: echte Portal-API-Connectoren je Portal (nur dokumentierte APIs), echtes Embedding-Modell + Reranker, Web-Push-Server.

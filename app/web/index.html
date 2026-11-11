@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fan Chat Assistent</title>
+<link rel="manifest" href="/app/manifest.webmanifest">
+<link rel="icon" href="/app/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#7c5cff">
 <style>
   :root{--bg:#0f1115;--card:#171a21;--line:#2a2f3a;--fg:#e8eaf0;--muted:#9aa3b2;--ok:#2ecc71;--warn:#f1c40f;--bad:#e74c3c;--acc:#7c5cff}
   @media (prefers-color-scheme: light){:root{--bg:#f6f7fb;--card:#fff;--line:#e3e6ee;--fg:#14161c;--muted:#5d6675}}
@@ -164,6 +167,19 @@ async function renderStats() {
     <div class="card"><b>Top-Fans</b>${(s.top_fans || []).map(f => `<div class="row"><span>${esc(f.nickname || "Fan")}</span><span class="muted">${Number(f.total_spent).toFixed(2)} €</span></div>`).join("")}</div>`;
 }
 if (token) start().catch(logout);
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/app/sw.js").catch(() => {});
+// Local notification when new drafts arrive while the dashboard is open (no push server needed).
+let lastPending = null;
+async function pollNew() {
+  if (!token) return;
+  try {
+    const n = (await api("/drafts?status=pending")).length;
+    if (lastPending !== null && n > lastPending && Notification.permission === "granted") new Notification("Fan Chat", {body: `${n - lastPending} neue Entwürfe warten auf Freigabe`});
+    lastPending = n;
+  } catch (e) {}
+}
+setInterval(pollNew, 60000);
+if ("Notification" in window && Notification.permission === "default") document.addEventListener("click", () => Notification.requestPermission(), {once: true});
 </script>
 </body>
 </html>

@@ -1,0 +1,11 @@
+{
+  "name": "Fan Chat Assistent",
+  "short_name": "FanChat",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0f1115",
+  "theme_color": "#7c5cff",
+  "lang": "de",
+  "icons": [{"src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}]
+}

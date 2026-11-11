@@ -190,3 +190,9 @@ def test_dashboard_served(client):
     assert r.status_code == 200 and "Fan Chat Assistent" in r.text and "Freigabe" in r.text
     assert "default-src 'self'" in r.headers["content-security-policy"]
     assert client.get("/").status_code == 200
+
+
+def test_pwa_assets(client):
+    assert client.get("/app/manifest.webmanifest").json()["start_url"] == "/app"
+    assert client.get("/app/sw.js").status_code == 200 and client.get("/app/icon.svg").status_code == 200
+    assert client.get("/app/../etc/passwd").status_code in (404, 422) and client.get("/app/nope").status_code == 404

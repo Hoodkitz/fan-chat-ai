@@ -650,9 +650,17 @@ def healthz():
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
 
 
+@app.get("/app/{asset}", include_in_schema=False)
+def dashboard_asset(asset: str):
+    allowed = {"manifest.webmanifest": "application/manifest+json", "icon.svg": "image/svg+xml", "sw.js": "application/javascript"}
+    if asset not in allowed:
+        raise HTTPException(404, "Nicht gefunden")
+    return FileResponse(WEB_DIR / asset, media_type=allowed[asset], headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/app", include_in_schema=False)
 @app.get("/", include_in_schema=False)
 def dashboard():
     """Creator dashboard: approval queue, escalations, fans, stats (static page on this API)."""
     return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-store",
-                                                         "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:"})
+                                                         "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; manifest-src 'self'; worker-src 'self'"})
