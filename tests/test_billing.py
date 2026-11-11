@@ -81,3 +81,18 @@ def test_login_lockout(client):
     assert client.post("/auth/login", json={"email": email, "password": PW}).status_code == 401  # locked, uniform answer
     ghost = client.post("/auth/login", json={"email": "nobody@example.com", "password": PW})
     assert ghost.status_code == 401 and ghost.json()["detail"] == "E-Mail oder Passwort falsch"
+
+
+def test_lock_expires_and_counter_restarts(client):
+    from datetime import timedelta
+    from sqlalchemy import func, update
+    from app.domain.models import User
+    email = f"{uuid.uuid4().hex[:8]}@example.com"
+    client.post("/auth/register", json={"email": email, "password": PW, "display_name": "L"})
+    for _ in range(5):
+        client.post("/auth/login", json={"email": email, "password": "Wrong12345x"})
+    db = new_session()
+    db.execute(update(User).where(User.email == email).values(locked_until=func.now() - timedelta(seconds=1)))
+    db.commit(); db.close()
+    assert client.post("/auth/login", json={"email": email, "password": "Wrong12345x"}).status_code == 401
+    assert client.post("/auth/login", json={"email": email, "password": PW}).status_code == 200

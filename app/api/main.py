@@ -14,7 +14,7 @@ from typing import Literal, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import func, update
+from sqlalchemy import case, func, update
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import Ctx, ctx, editor, owner
@@ -103,7 +103,9 @@ def login(req: LoginIn):
             # Reserve this attempt atomically; refused while locked, so parallel guesses cannot exceed the limit.
             n = db.execute(update(User).where(User.id == user.id, (User.locked_until.is_(None)) |
                                               (User.locked_until <= func.now()))
-                           .values(failed_logins=User.failed_logins + 1).returning(User.failed_logins)).scalar()
+                           .values(failed_logins=case((User.locked_until.is_not(None), 1),  # lock expired: restart
+                                                      else_=User.failed_logins + 1),
+                                   locked_until=None).returning(User.failed_logins)).scalar()
             if n is None:
                 db.commit()
                 verify_password(req.password, None)  # equal timing
