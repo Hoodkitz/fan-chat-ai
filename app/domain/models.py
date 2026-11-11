@@ -55,6 +55,7 @@ class Tenant(Base):
     plan = Column(String(20), nullable=False, server_default="trial")
     trial_ends_at = Column(DateTime(timezone=True), server_default=text("now() + interval '14 days'"))
     stripe_customer_id = Column(String(64), nullable=True, index=True)
+    billing_event_at = Column(BigInteger, nullable=True)  # 'created' of the last applied subscription event
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

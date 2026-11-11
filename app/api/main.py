@@ -97,21 +97,27 @@ def login(req: LoginIn):
     db = new_session()
     try:
         user = db.query(User).filter(User.email == req.email.lower()).one_or_none()
-        now = datetime.now(timezone.utc)
-        if user is not None and user.locked_until and user.locked_until > now:
-            raise HTTPException(429, "Zu viele Fehlversuche – Konto für 15 Minuten gesperrt")
-        if not verify_password(req.password, user.hashed_password if user else None):
-            if user is not None:  # atomic: parallel guesses cannot share one counter value
-                n = db.execute(update(User).where(User.id == user.id).values(failed_logins=User.failed_logins + 1)
-                               .returning(User.failed_logins)).scalar_one()
-                if n >= MAX_FAILED_LOGINS:
-                    db.execute(update(User).where(User.id == user.id)
-                               .values(failed_logins=0, locked_until=now + timedelta(minutes=15)))
+        denied = HTTPException(401, "E-Mail oder Passwort falsch")  # same answer for unknown, wrong and locked
+        n = 0
+        if user is not None:
+            # Reserve this attempt atomically; refused while locked, so parallel guesses cannot exceed the limit.
+            n = db.execute(update(User).where(User.id == user.id, (User.locked_until.is_(None)) |
+                                              (User.locked_until <= func.now()))
+                           .values(failed_logins=User.failed_logins + 1).returning(User.failed_logins)).scalar()
+            if n is None:
                 db.commit()
-            raise HTTPException(401, "E-Mail oder Passwort falsch")
-        if user.failed_logins or user.locked_until:
-            user.failed_logins, user.locked_until = 0, None
+                verify_password(req.password, None)  # equal timing
+                raise denied
+            if n >= MAX_FAILED_LOGINS:
+                db.execute(update(User).where(User.id == user.id)
+                           .values(locked_until=func.now() + timedelta(minutes=15)))
             db.commit()
+        if not verify_password(req.password, user.hashed_password if user else None):
+            raise denied
+        if n >= MAX_FAILED_LOGINS:
+            raise denied  # this attempt used the last allowance; lock wins even with a correct password
+        db.execute(update(User).where(User.id == user.id).values(failed_logins=0, locked_until=None))
+        db.commit()
         set_context(db, None, user.id)
         m = db.query(Membership).filter(Membership.user_id == user.id).first()
         if m is None:
@@ -758,7 +764,11 @@ async def billing_webhook(request: Request, sig: Optional[str] = Header(None, al
             if t is not None:
                 if obj.get("customer"):
                     t.stripe_customer_id = str(obj["customer"])[:64]
-                if etype.startswith("customer.subscription."):
+                created = int(event.get("created") or 0)
+                if etype.startswith("customer.subscription.") and created < (t.billing_event_at or 0):
+                    pass  # older than the state already applied (Stripe does not guarantee ordering)
+                elif etype.startswith("customer.subscription."):
+                    t.billing_event_at = created
                     prices = [((i.get("price") or {}).get("id")) for i in ((obj.get("items") or {}).get("data") or [])]
                     plan = billing.plan_for_prices(prices)
                     active = obj.get("status") in ("active", "trialing") and etype != "customer.subscription.deleted"

@@ -39,7 +39,7 @@ def test_trial_then_paused_then_paid(acc, fan, client, monkeypatch):
     d = [x for x in a.get("/drafts").json() if x["fan_id"] == f["id"]][0]
     assert d["status"] == "escalated" and "pausiert" in d["escalation_reason"]
 
-    ev = {"id": "evt_" + uuid.uuid4().hex, "type": "customer.subscription.updated",
+    ev = {"id": "evt_" + uuid.uuid4().hex, "type": "customer.subscription.updated", "created": 2000,
           "data": {"object": {"customer": "cus_1", "status": "active", "metadata": {"tenant_id": a.tid},
                               "items": {"data": [{"price": {"id": "price_pro"}}]}}}}
     body = json.dumps(ev).encode()
@@ -51,10 +51,15 @@ def test_trial_then_paused_then_paid(acc, fan, client, monkeypatch):
     assert st["plan"] == "pro" and st["ai_enabled"] and st["has_subscription"]
 
     # a subscription whose price is not one of ours never grants a plan
-    ev2 = {**ev, "id": "evt_" + uuid.uuid4().hex}
+    ev2 = {**ev, "id": "evt_" + uuid.uuid4().hex, "created": 3000}
     ev2["data"] = {"object": {**ev["data"]["object"], "items": {"data": [{"price": {"id": "price_other"}}]}}}
     body2 = json.dumps(ev2).encode()
     client.post("/billing/webhook", content=body2, headers={"Stripe-Signature": _sign(body2)})
+    assert a.get("/billing").json()["plan"] == "inactive"
+    # an older event delivered late must not overwrite newer state
+    ev3 = {**ev, "id": "evt_" + uuid.uuid4().hex, "created": 1000}
+    body3 = json.dumps(ev3).encode()
+    client.post("/billing/webhook", content=body3, headers={"Stripe-Signature": _sign(body3)})
     assert a.get("/billing").json()["plan"] == "inactive"
 
 
@@ -73,4 +78,6 @@ def test_login_lockout(client):
     client.post("/auth/register", json={"email": email, "password": PW, "display_name": "L"})
     for _ in range(5):
         assert client.post("/auth/login", json={"email": email, "password": "Wrong12345x"}).status_code == 401
-    assert client.post("/auth/login", json={"email": email, "password": PW}).status_code == 429
+    assert client.post("/auth/login", json={"email": email, "password": PW}).status_code == 401  # locked, uniform answer
+    ghost = client.post("/auth/login", json={"email": "nobody@example.com", "password": PW})
+    assert ghost.status_code == 401 and ghost.json()["detail"] == "E-Mail oder Passwort falsch"
