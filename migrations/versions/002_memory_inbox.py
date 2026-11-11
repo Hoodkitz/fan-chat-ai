@@ -23,6 +23,8 @@ def upgrade():
     for t in NEW_TABLES:
         op.execute(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {t} FORCE ROW LEVEL SECURITY")
+        # 001 builds the schema from the current models, so on a fresh database the policy may already exist
+        op.execute(f"DROP POLICY IF EXISTS tenant_isolation ON {t}")
         op.execute(f"CREATE POLICY tenant_isolation ON {t} USING (tenant_id = app_tenant_id()) "
                    "WITH CHECK (tenant_id = app_tenant_id())")
 
