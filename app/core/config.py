@@ -10,7 +10,8 @@ load_dotenv(ROOT / ".env", override=False)
 
 class Settings:
     def __init__(self) -> None:
-        self.ENV = os.getenv("ENV", "development")
+        # Fail closed: ohne explizites ENV=development gelten die Produktionsregeln (keine Dev-Secrets).
+        self.ENV = os.getenv("ENV", "production")
         self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg2://fanchat_app:fanchat_app@localhost:5432/fanchat")
         self.MIGRATION_DATABASE_URL = os.getenv(
             "MIGRATION_DATABASE_URL", "postgresql+psycopg2://nexussaas:nexussaas@localhost:5432/fanchat")
@@ -26,11 +27,11 @@ class Settings:
         # Uploaded portal exports live here, one sub-directory per tenant; never user-supplied paths.
         self.EXPORT_DIR = os.getenv("EXPORT_DIR", str(ROOT / "var" / "exports"))
         if not self.SECRET_KEY:
-            if self.ENV == "production":
+            if self.ENV not in ("development", "test"):
                 raise RuntimeError("SECRET_KEY required")
             self.SECRET_KEY = "dev-only-insecure-secret-key-change-me-0123456789"
         if not self.FIELD_ENCRYPTION_KEY:
-            if self.ENV == "production":
+            if self.ENV not in ("development", "test"):
                 raise RuntimeError("FIELD_ENCRYPTION_KEY required")
             self.FIELD_ENCRYPTION_KEY = "ZGV2LW9ubHktZmllbGQta2V5LWNoYW5nZS1tZS0xMjM="  # dev only
 

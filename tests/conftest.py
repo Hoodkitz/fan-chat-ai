@@ -2,6 +2,7 @@ import os
 import uuid
 
 os.environ["LLM_PROVIDER"] = "fake"
+os.environ.setdefault("ENV", "test")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
