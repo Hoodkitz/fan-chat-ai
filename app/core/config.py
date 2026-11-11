@@ -33,6 +33,11 @@ class Settings:
         self.GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self.GEMINI_API_KEY_FILE = os.getenv("GEMINI_API_KEY_FILE", str(Path.home() / ".secrets" / "gemini_api_key"))
         self.FIELD_ENCRYPTION_KEY = os.getenv("FIELD_ENCRYPTION_KEY", "")
+        self.STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+        self.STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+        self.STRIPE_PRICE_PRO = os.getenv("STRIPE_PRICE_PRO", "")
+        self.STRIPE_PRICE_AGENCY = os.getenv("STRIPE_PRICE_AGENCY", "")
+        self.PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
         # Uploaded portal exports live here, one sub-directory per tenant; never user-supplied paths.
         self.EXPORT_DIR = os.getenv("EXPORT_DIR", str(ROOT / "var" / "exports"))
         if not self.SECRET_KEY:

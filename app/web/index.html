@@ -19,8 +19,8 @@
   button[aria-pressed=true]{border-color:var(--acc);box-shadow:inset 0 0 0 1px var(--acc)}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
   .muted{color:var(--muted);font-size:13px} .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-  textarea,input{width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:9px;font:inherit}
-  textarea{min-height:90px} .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line)}
+  textarea,input,select{width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:9px;font:inherit}
+  textarea{min-height:90px} label{display:block;margin:10px 0 4px;font-size:13px;color:var(--muted)} details summary{cursor:pointer;color:var(--acc);margin-top:8px} .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line)}
   .badge.escalated{border-color:var(--bad);color:var(--bad)} .badge.pending{border-color:var(--warn);color:var(--warn)} .badge.approved{border-color:var(--ok);color:var(--ok)}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px} .kpi b{font-size:22px;display:block}
   .hidden{display:none} #toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--card);border:1px solid var(--line);padding:10px 14px;border-radius:10px}
@@ -38,6 +38,16 @@
       <button class="primary" type="submit">Anmelden</button>
     </form>
     <p id="loginErr" class="muted"></p>
+    <details>
+      <summary>Neu hier? Konto erstellen (14 Tage kostenlos testen)</summary>
+      <form id="registerForm" class="row" style="margin-top:10px">
+        <input id="regName" placeholder="Dein Künstlername" required maxlength="120">
+        <input id="regEmail" type="email" placeholder="E-Mail" required autocomplete="username">
+        <input id="regPassword" type="password" placeholder="Passwort (10+ Zeichen, Groß/klein, Ziffer)" required minlength="10" autocomplete="new-password">
+        <button class="primary" type="submit">Konto erstellen</button>
+      </form>
+      <p id="regErr" class="muted"></p>
+    </details>
   </section>
 
   <section id="app" class="hidden">
@@ -46,11 +56,16 @@
       <button data-tab="escalations">Eskalationen</button>
       <button data-tab="fans">Fans</button>
       <button data-tab="stats">Statistik</button>
+      <button data-tab="profile">Profil</button>
+      <button data-tab="billing">Abo</button>
     </nav>
+    <div id="planBanner" class="card notice hidden"></div>
     <div id="tab-queue"></div>
     <div id="tab-escalations" class="hidden"></div>
     <div id="tab-fans" class="hidden"></div>
     <div id="tab-stats" class="hidden"></div>
+    <div id="tab-profile" class="hidden"></div>
+    <div id="tab-billing" class="hidden"></div>
   </section>
 </main>
 <div id="toast" class="hidden"></div>
@@ -78,6 +93,14 @@ $("#loginForm").addEventListener("submit", async e => {
     start();
   } catch (err) { $("#loginErr").textContent = err.message; }
 });
+$("#registerForm").addEventListener("submit", async e => {
+  e.preventDefault(); $("#regErr").textContent = "";
+  try {
+    const d = await api("/auth/register", {method: "POST", body: JSON.stringify({display_name: $("#regName").value, email: $("#regEmail").value, password: $("#regPassword").value})});
+    token = d.access_token; try { sessionStorage.setItem("fc_token", token); } catch (e) {}
+    await start(); show("profile"); toast("Willkommen! Richte zuerst dein Profil ein.");
+  } catch (err) { $("#regErr").textContent = err.message; }
+});
 $("#logout").addEventListener("click", logout);
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => show(b.dataset.tab)));
 
@@ -85,12 +108,20 @@ let fans = {};
 async function start() {
   $("#login").classList.add("hidden"); $("#app").classList.remove("hidden"); $("#logout").classList.remove("hidden");
   const p = await api("/profile"); $("#who").textContent = p.display_name;
-  await loadFans(); show("queue");
+  await loadFans(); show("queue"); refreshPlan();
+}
+async function refreshPlan() {
+  try {
+    const b = await api("/billing"); const el = $("#planBanner");
+    if (!b.ai_enabled) { el.innerHTML = 'Deine Testphase bzw. dein Abo ist abgelaufen – KI-Entwürfe sind pausiert. <button class="primary" id="bannerUpgrade">Abo wählen</button>'; el.classList.remove("hidden"); $("#bannerUpgrade").onclick = () => show("billing"); }
+    else if (b.plan === "trial" && b.trial_ends_at) { el.textContent = `Testphase bis ${fmt(b.trial_ends_at)}.`; el.classList.remove("hidden"); }
+    else el.classList.add("hidden");
+  } catch (e) {}
 }
 function show(tab) {
   document.querySelectorAll("nav button").forEach(b => b.setAttribute("aria-pressed", b.dataset.tab === tab));
-  ["queue", "escalations", "fans", "stats"].forEach(t => $("#tab-" + t).classList.toggle("hidden", t !== tab));
-  ({queue: renderQueue, escalations: renderEscalations, fans: renderFans, stats: renderStats})[tab]();
+  ["queue", "escalations", "fans", "stats", "profile", "billing"].forEach(t => $("#tab-" + t).classList.toggle("hidden", t !== tab));
+  ({queue: renderQueue, escalations: renderEscalations, fans: renderFans, stats: renderStats, profile: renderProfile, billing: renderBilling})[tab]();
 }
 async function loadFans() { fans = {}; (await api("/fans")).forEach(f => fans[f.id] = f); }
 const fanName = id => (fans[id]?.nickname || "Fan") + " · " + (fans[id]?.portal || "");
@@ -98,8 +129,8 @@ const fanName = id => (fans[id]?.nickname || "Fan") + " · " + (fans[id]?.portal
 function draftCard(d, escalated) {
   const el = document.createElement("div"); el.className = "card";
   el.innerHTML = `
-    <div class="row"><span class="badge ${esc(d.status)}">${esc(d.status)}</span><b>${esc(fanName(d.fan_id))}</b>
-      <span class="muted">${esc(d.kind)} · ${esc(d.reason || "")} · ${fmt(d.created_at)}</span></div>
+    <div class="row"><span class="badge ${esc(d.status)}">${esc(({pending: "offen", escalated: "selbst antworten", approved: "freigegeben", sent: "gesendet", rejected: "verworfen"})[d.status] || d.status)}</span><b>${esc(fanName(d.fan_id))}</b>
+      <span class="muted">${esc(d.kind === "reply" ? "Antwort" : d.kind === "outreach" ? "Kontaktpflege" : d.kind)} · ${esc(d.reason || "")} · ${fmt(d.created_at)}</span></div>
     ${escalated ? `<p class="notice"><b>Bitte selbst antworten:</b> ${esc(d.escalation_reason)}</p>` : ""}
     <textarea aria-label="Nachrichtentext">${esc(d.body || "")}</textarea>
     <div class="row">
@@ -147,11 +178,81 @@ const renderEscalations = () => renderList("#tab-escalations", "escalated", true
 async function renderFans() {
   await loadFans();
   const box = $("#tab-fans");
-  box.innerHTML = `<div class="card row"><button class="primary" id="outreach">Kontaktpflege-Entwürfe erzeugen</button><span class="muted">Geburtstage und lange Funkstille – als Entwürfe in die Freigabe.</span></div>` +
+  box.innerHTML = `<div class="card row"><button class="primary" id="outreach">Kontaktpflege-Entwürfe erzeugen</button><span class="muted">Geburtstage und lange Funkstille – als Entwürfe in die Freigabe.</span></div>
+    <details class="card"><summary>Fan anlegen</summary><form id="fanForm">
+      <label>Portal</label><input id="fanPortal" value="manual" required maxlength="40">
+      <label>Benutzer-ID auf dem Portal</label><input id="fanPid" required maxlength="200">
+      <label>Spitzname</label><input id="fanNick" maxlength="120">
+      <label>Geburtstag</label><input id="fanBday" type="date">
+      <label>Vorlieben / Notizen</label><textarea id="fanNotes" maxlength="3000"></textarea>
+      <button class="primary" type="submit">Speichern</button></form></details>
+    <details class="card"><summary>Nachricht eines Fans eintragen (erzeugt einen Antwortentwurf)</summary><form id="msgForm">
+      <label>Fan</label><select id="msgFan">${Object.values(fans).map(f => `<option value="${esc(f.id)}">${esc(f.nickname || f.portal_user_id || "Fan")} · ${esc(f.portal)}</option>`).join("")}</select>
+      <label>Nachricht</label><textarea id="msgBody" required maxlength="4000"></textarea>
+      <button class="primary" type="submit">Eintragen</button></form></details>` +
     Object.values(fans).map(f => `<div class="card"><div class="row"><b>${esc(f.nickname || "Fan")}</b><span class="badge">${esc(f.portal)}</span>
       ${f.do_not_contact ? '<span class="badge escalated">Kontaktsperre</span>' : ""}<span class="muted">Umsatz ${Number(f.total_spent).toFixed(2)} € · letzter Kontakt ${fmt(f.last_contact_at)}</span></div>
       ${f.notes ? `<div class="muted">${esc(f.notes)}</div>` : ""}</div>`).join("");
   $("#outreach").onclick = async () => { try { const r = await api("/outreach/generate", {method: "POST"}); toast(`${r.length} Entwürfe erzeugt`); } catch (err) { toast(err.message); } };
+  $("#fanForm").onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await api("/fans", {method: "POST", body: JSON.stringify({portal: $("#fanPortal").value, portal_user_id: $("#fanPid").value,
+        nickname: $("#fanNick").value || null, birthday: $("#fanBday").value || null, notes: $("#fanNotes").value || null})});
+      toast("Fan gespeichert"); renderFans();
+    } catch (err) { toast(err.message); }
+  };
+  $("#msgForm").onsubmit = async e => {
+    e.preventDefault();
+    if (!$("#msgFan").value) return toast("Bitte zuerst einen Fan anlegen");
+    try {
+      await api(`/fans/${$("#msgFan").value}/messages`, {method: "POST", body: JSON.stringify({direction: "in", body: $("#msgBody").value})});
+      toast("Eingetragen – Entwurf liegt in der Freigabe"); $("#msgBody").value = "";
+    } catch (err) { toast(err.message); }
+  };
+}
+const lines = v => v.split(/[\n,]/).map(x => x.trim()).filter(Boolean);
+async function renderProfile() {
+  const p = await api("/profile");
+  const prices = Object.entries(p.prices || {}).map(([k, v]) => `${k} = ${v}`).join("\n");
+  $("#tab-profile").innerHTML = `<form id="profileForm" class="card">
+    <label>Anzeigename</label><input id="pName" value="${esc(p.display_name)}" maxlength="120">
+    <label>Persona – wie du schreibst und wer du bist (die KI übernimmt das)</label><textarea id="pPersona" maxlength="5000">${esc(p.persona || "")}</textarea>
+    <label>Grenzen – Themen, zu denen die KI nie schreibt (eine pro Zeile)</label><textarea id="pBounds">${esc((p.boundaries || []).join("\n"))}</textarea>
+    <label>Eskalations-Stichwörter – dann antwortest du selbst (eine pro Zeile)</label><textarea id="pKeys">${esc((p.escalation_keywords || []).join("\n"))}</textarea>
+    <label>Preise (Angebot = Preis in €, eine pro Zeile)</label><textarea id="pPrices">${esc(prices)}</textarea>
+    <label>Top-Fan ab Umsatz (€) – diese Fans bekommen immer eine persönliche Antwort</label><input id="pHv" type="number" min="0" step="1" value="${esc(p.high_value_threshold)}">
+    <label>Kontaktpflege nach wie vielen Tagen Funkstille</label><input id="pDays" type="number" min="1" max="365" value="${esc(p.auto_outreach_days || 14)}">
+    <div class="row" style="margin-top:12px"><button class="primary" type="submit">Speichern</button><button type="button" id="learnStyle">Schreibstil aus meinen Nachrichten lernen</button></div>
+    <p class="muted">${p.style && p.style.samples ? `Gelernter Stil aus ${esc(p.style.samples)} Nachrichten: ⌀ ${esc(p.style.avg_length)} Zeichen, ${esc(p.style.emoji_per_message)} Emojis je Nachricht ${esc((p.style.top_emojis || []).join(" "))}, Anrede ${p.style.address === "formal" ? "Sie" : "du"}` : "Noch kein Stil gelernt – trage ein paar eigene Nachrichten ein oder importiere Chats."}</p>
+  </form>`;
+  $("#profileForm").onsubmit = async e => {
+    e.preventDefault();
+    const pr = {};
+    for (const l of $("#pPrices").value.split("\n")) { const [k, v] = l.split("="); if (k && v && !isNaN(parseFloat(v))) pr[k.trim()] = parseFloat(v); }
+    try {
+      await api("/profile", {method: "PUT", body: JSON.stringify({display_name: $("#pName").value, persona: $("#pPersona").value,
+        boundaries: lines($("#pBounds").value), escalation_keywords: lines($("#pKeys").value), prices: pr,
+        high_value_threshold: parseFloat($("#pHv").value || "0"), auto_outreach_days: parseInt($("#pDays").value || "14")})});
+      $("#who").textContent = $("#pName").value; toast("Profil gespeichert");
+    } catch (err) { toast(err.message); }
+  };
+  $("#learnStyle").onclick = async () => { try { await api("/profile/learn-style", {method: "POST"}); toast("Stil gelernt"); renderProfile(); } catch (err) { toast(err.message); } };
+}
+async function renderBilling() {
+  const b = await api("/billing");
+  const names = {trial: "Testphase", pro: "Pro", agency: "Agentur", inactive: "Kein aktives Abo"};
+  $("#tab-billing").innerHTML = `<div class="card"><b>Aktueller Tarif: ${esc(names[b.plan] || b.plan)}</b>
+      <p class="muted">${b.plan === "trial" ? `Kostenlos bis ${fmt(b.trial_ends_at)}.` : ""} KI-Entwürfe: ${b.ai_enabled ? "aktiv" : "pausiert"}</p></div>
+    <div class="grid">
+      <div class="card"><b>Pro</b><p class="muted">Ein Model, unbegrenzte KI-Entwürfe, Kontaktpflege, Langzeitgedächtnis.</p><button class="primary" data-plan="pro">Pro wählen</button></div>
+      <div class="card"><b>Agentur</b><p class="muted">Mehrere Models und Assistent:innen mit Freigabe-Rechten.</p><button class="primary" data-plan="agency">Agentur wählen</button></div>
+    </div>
+    ${b.has_subscription ? '<div class="card"><button id="portal">Abo verwalten / kündigen / Rechnungen</button></div>' : ""}`;
+  document.querySelectorAll("[data-plan]").forEach(btn => btn.onclick = async () => {
+    try { location.href = (await api("/billing/checkout", {method: "POST", body: JSON.stringify({plan: btn.dataset.plan})})).url; } catch (err) { toast(err.message); }
+  });
+  if ($("#portal")) $("#portal").onclick = async () => { try { location.href = (await api("/billing/portal", {method: "POST"})).url; } catch (err) { toast(err.message); } };
 }
 async function renderStats() {
   const s = await api("/stats");

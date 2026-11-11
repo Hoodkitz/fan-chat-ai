@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 
@@ -40,10 +41,20 @@ def _id():
     return uuid.uuid4()
 
 
+class Plan(str, enum.Enum):
+    TRIAL = "trial"        # full features until trial_ends_at
+    PRO = "pro"            # one creator
+    AGENCY = "agency"      # several creators / assistants
+    INACTIVE = "inactive"  # trial over or subscription ended: data stays, AI drafting pauses
+
+
 class Tenant(Base):
     __tablename__ = "tenants"
     id = Column(UUID(as_uuid=True), primary_key=True, default=_id)
     name = Column(String(200), nullable=False)
+    plan = Column(String(20), nullable=False, server_default="trial")
+    trial_ends_at = Column(DateTime(timezone=True), server_default=text("now() + interval '14 days'"))
+    stripe_customer_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -53,6 +64,8 @@ class User(Base):
     email = Column(String(320), unique=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     token_version = Column(Integer, nullable=False, default=0)
+    failed_logins = Column(Integer, nullable=False, server_default="0")
+    locked_until = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -152,6 +165,13 @@ class MemoryFact(Base):
     tsv = Column(TSVECTOR, nullable=False)                          # to_tsvector('german', redacted fact)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     __table_args__ = (Index("ix_memory_facts_tsv", "tsv", postgresql_using="gin"),)
+
+
+class StripeEvent(Base):
+    """Processed Stripe webhook ids (exactly-once). Holds no tenant data, so it is not tenant-scoped."""
+    __tablename__ = "stripe_events"
+    event_id = Column(String(100), primary_key=True)
+    received_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class WebhookInbox(Base):

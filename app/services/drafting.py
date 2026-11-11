@@ -9,7 +9,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from app.domain.models import CreatorProfile, Draft, DraftStatus, Fan, Message, Purchase
+from app.domain.models import Tenant, CreatorProfile, Draft, DraftStatus, Fan, Message, Purchase
+from app.services.billing import ai_allowed
 from app.services.guardrails import input_violations, output_violations, wrap_untrusted
 from app.services.llm import LLMError, get_llm
 from app.services.pii import redact
@@ -61,6 +62,9 @@ def create_reply_draft(db: Session, tenant_id, fan: Fan, incoming_text: str) -> 
                                fan.total_spent or 0, profile.high_value_threshold)
     if fan.do_not_contact:
         reason = "Kontaktsperre aktiv – kein Entwurf"
+    tenant = db.get(Tenant, tenant_id)
+    if not reason and tenant is not None and not ai_allowed(tenant):
+        reason = "Testphase/Abo abgelaufen – KI-Entwürfe pausiert, bitte selbst antworten"
     if not reason:
         inj = input_violations(incoming_text, fan.nickname or "")
         if inj:
@@ -106,6 +110,9 @@ def outreach_candidates(db: Session, tenant_id, today: date | None = None) -> li
 def create_outreach_drafts(db: Session, tenant_id, today: date | None = None) -> list[Draft]:
     profile = db.get(CreatorProfile, tenant_id)
     drafts = []
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is not None and not ai_allowed(tenant):
+        return drafts  # outreach is purely AI-generated: paused without an active plan
     for fan, why in outreach_candidates(db, tenant_id, today):
         open_exists = db.query(Draft.id).filter(Draft.fan_id == fan.id, Draft.kind == "outreach",
                                                 Draft.status == DraftStatus.PENDING.value).first()

@@ -6,7 +6,7 @@ import hmac
 import logging
 import secrets
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal, Optional
@@ -14,7 +14,7 @@ from typing import Literal, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import Ctx, ctx, editor, owner
@@ -32,11 +32,14 @@ from app.domain.models import (
     Membership,
     MemoryFact,
     Message,
+    Plan,
     Purchase,
+    StripeEvent,
     Tenant,
     User,
     WebhookInbox,
 )
+from app.services import billing
 from app.services.connectors import connector_for, export_path, sanitize_event
 from app.services.drafting import create_outreach_drafts, create_reply_draft
 from app.services.memory import add_fact, remember_from_message
@@ -44,7 +47,8 @@ from app.services.portals import adapter_for
 from app.services.retrieval import search_facts
 from app.services.style import analyze_style
 
-app = FastAPI(title="Fan Chat AI", version="0.2.0")
+app = FastAPI(title="Fan Chat AI", version="0.3.0")
+MAX_FAILED_LOGINS = 5
 log = logging.getLogger("fanchat.api")
 
 
@@ -93,8 +97,21 @@ def login(req: LoginIn):
     db = new_session()
     try:
         user = db.query(User).filter(User.email == req.email.lower()).one_or_none()
+        now = datetime.now(timezone.utc)
+        if user is not None and user.locked_until and user.locked_until > now:
+            raise HTTPException(429, "Zu viele Fehlversuche – Konto für 15 Minuten gesperrt")
         if not verify_password(req.password, user.hashed_password if user else None):
+            if user is not None:  # atomic: parallel guesses cannot share one counter value
+                n = db.execute(update(User).where(User.id == user.id).values(failed_logins=User.failed_logins + 1)
+                               .returning(User.failed_logins)).scalar_one()
+                if n >= MAX_FAILED_LOGINS:
+                    db.execute(update(User).where(User.id == user.id)
+                               .values(failed_logins=0, locked_until=now + timedelta(minutes=15)))
+                db.commit()
             raise HTTPException(401, "E-Mail oder Passwort falsch")
+        if user.failed_logins or user.locked_until:
+            user.failed_logins, user.locked_until = 0, None
+            db.commit()
         set_context(db, None, user.id)
         m = db.query(Membership).filter(Membership.user_id == user.id).first()
         if m is None:
@@ -664,3 +681,89 @@ def dashboard():
     """Creator dashboard: approval queue, escalations, fans, stats (static page on this API)."""
     return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-store",
                                                          "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; manifest-src 'self'; worker-src 'self'"})
+
+
+# ---------- billing ----------
+class CheckoutIn(BaseModel):
+    plan: Literal["pro", "agency"]
+
+
+@app.get("/billing")
+def billing_status(c: Ctx = Depends(ctx)):
+    t = c.db.get(Tenant, c.tenant_id)
+    return {"plan": t.plan, "trial_ends_at": t.trial_ends_at, "ai_enabled": billing.ai_allowed(t),
+            "has_subscription": bool(t.stripe_customer_id)}
+
+
+@app.post("/billing/checkout")
+def billing_checkout(req: CheckoutIn, c: Ctx = Depends(owner)):
+    price = {"pro": settings.STRIPE_PRICE_PRO, "agency": settings.STRIPE_PRICE_AGENCY}[req.plan]
+    if not price:
+        raise HTTPException(503, "Zahlungen sind noch nicht eingerichtet")
+    t = c.db.get(Tenant, c.tenant_id)
+    base = settings.PUBLIC_BASE_URL.rstrip("/")
+    form = [("mode", "subscription"), ("line_items[0][price]", price), ("line_items[0][quantity]", "1"),
+            ("success_url", f"{base}/app/?billing=success"), ("cancel_url", f"{base}/app/?billing=cancel"),
+            ("client_reference_id", str(t.id)), ("allow_promotion_codes", "true"),
+            ("subscription_data[metadata][tenant_id]", str(t.id))]
+    if t.stripe_customer_id:
+        form.append(("customer", t.stripe_customer_id))
+    try:
+        return {"url": billing.stripe_post("checkout/sessions", form)["url"]}
+    except billing.BillingError as e:
+        raise HTTPException(502, str(e))
+
+
+@app.post("/billing/portal")
+def billing_portal(c: Ctx = Depends(owner)):
+    t = c.db.get(Tenant, c.tenant_id)
+    if not t.stripe_customer_id:
+        raise HTTPException(404, "Noch kein Abo vorhanden")
+    try:
+        return {"url": billing.stripe_post("billing_portal/sessions", [
+            ("customer", t.stripe_customer_id), ("return_url", f"{settings.PUBLIC_BASE_URL.rstrip('/')}/app/")])["url"]}
+    except billing.BillingError as e:
+        raise HTTPException(502, str(e))
+
+
+@app.post("/billing/webhook")
+async def billing_webhook(request: Request, sig: Optional[str] = Header(None, alias="Stripe-Signature")):
+    body = await request.body()
+    if not billing.verify_signature(body, sig):
+        raise HTTPException(400, "Ungültige Signatur")
+    import json
+    event = json.loads(body)
+    db = new_session()
+    try:
+        db.add(StripeEvent(event_id=str(event.get("id", ""))[:100]))
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            return {"duplicate": True}
+        obj = (event.get("data") or {}).get("object") or {}
+        etype = event.get("type", "")
+        tid = None
+        if etype == "checkout.session.completed":
+            tid = obj.get("client_reference_id")
+        elif etype.startswith("customer.subscription."):
+            tid = (obj.get("metadata") or {}).get("tenant_id")
+        try:
+            tid = uuid.UUID(str(tid)) if tid else None
+        except ValueError:
+            tid = None
+        if tid is not None:
+            set_context(db, tid, None)
+            t = db.get(Tenant, tid)
+            if t is not None:
+                if obj.get("customer"):
+                    t.stripe_customer_id = str(obj["customer"])[:64]
+                if etype.startswith("customer.subscription."):
+                    prices = [((i.get("price") or {}).get("id")) for i in ((obj.get("items") or {}).get("data") or [])]
+                    plan = billing.plan_for_prices(prices)
+                    active = obj.get("status") in ("active", "trialing") and etype != "customer.subscription.deleted"
+                    t.plan = (plan.value if (active and plan) else Plan.INACTIVE.value)
+        db.commit()
+        return {"received": True}
+    finally:
+        db.close()

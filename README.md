@@ -28,7 +28,7 @@ Amateur-Erotikmodels, Content Creator, Agenturen
 
 ---
 
-# Umsetzung (v0.2, MVP + S3)
+# Umsetzung (v0.3)
 
 **Prinzip: Assistenz statt Täuschung.** Die KI schreibt Entwürfe im Stil der Creatorin. Gesendet wird nur,
 was sie selbst freigibt, und jede KI-unterstützte Nachricht trägt einen sichtbaren Hinweis
@@ -51,6 +51,10 @@ werden eskaliert: Dafür erzeugt die KI keinen Text, die Creatorin antwortet sel
 | PII-Redaktion | `app/services/pii.py`: E-Mail, Telefon, IBAN, Kartennummer (Luhn) → Platzhalter, vor Index und Prompt |
 | Guardrails | `app/services/guardrails.py`: Input-Rail (Injektionsmuster in Nachricht/Nickname → Eskalation), Fan-Daten im Prompt als `<untrusted>` markiert; Output-Rail (Link, „bin kein Bot“, Gratis, Kontaktdaten/Plattformwechsel → Entwurf blockiert, Creatorin schreibt selbst) |
 | Statistiken | `/stats` zusätzlich je Portal: Fans, Umsatz, Nachrichten ein/aus |
+| Abo | 14 Tage Testphase, dann Pro/Agentur über Stripe Checkout (`POST /billing/checkout`), Kundenportal (`/billing/portal`), signierter Webhook `/billing/webhook` (Tarif nur aus bezahlter Price-ID, exactly-once). Ohne aktives Abo bleiben alle Daten, KI-Entwürfe pausieren (Eskalation statt Text). |
+| KI-Anbieter | `LLM_PROVIDER=gemini|anthropic|openai` (OpenAI-kompatibel inkl. OpenRouter); Ausfall → Eskalation statt Fehler |
+| Web-App | Registrierung, Profil (Persona, Grenzen, Preise, Stil lernen), Fans anlegen, Nachrichten eintragen, Freigabe, Eskalationen, Statistik, Abo |
+| Login-Schutz | Sperre 15 min nach 5 Fehlversuchen (atomarer Zähler) |
 
 Sicherheit: Multi-Tenant mit PostgreSQL FORCE RLS, App-Rolle ohne SUPERUSER/BYPASSRLS, Argon2id, JWT mit Widerruf,
 nur die Creatorin (Rolle owner) darf freigeben, Audit-Log, Löschen eines Fans entfernt alles (DSGVO).
