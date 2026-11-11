@@ -7,9 +7,8 @@ import secrets
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Literal, Optional
-
 from pathlib import Path
+from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -37,6 +36,7 @@ from app.domain.models import (
     User,
     WebhookInbox,
 )
+from app.services.connectors import connector_for, sanitize_event
 from app.services.drafting import create_outreach_drafts, create_reply_draft
 from app.services.memory import add_fact, remember_from_message
 from app.services.portals import adapter_for
@@ -385,6 +385,86 @@ async def portal_webhook(tenant_id: str, request: Request, x_signature: str = He
         raise HTTPException(422, str(e)[:200])
     finally:
         db.close()
+
+
+# ---------- connectors (official portal APIs / exports, polled) ----------
+class ConnectorIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    kind: str = Field(min_length=1, max_length=40)
+    portal: str = Field(min_length=1, max_length=40)
+    config: dict = Field(default_factory=dict)
+
+
+def _load_connectors(p: CreatorProfile) -> list[dict]:
+    import json
+    return json.loads(p.connectors) if p.connectors else []
+
+
+def _save_connectors(p: CreatorProfile, items: list[dict]) -> None:
+    import json
+    p.connectors = json.dumps(items)
+
+
+def _connector_out(c: dict) -> dict:
+    return {"name": c["name"], "kind": c["kind"], "portal": c["portal"], "cursor": c.get("cursor"),
+            "config_keys": sorted(c.get("config", {}).keys())}
+
+
+@app.get("/connectors")
+def list_connectors(c: Ctx = Depends(owner)):
+    return [_connector_out(x) for x in _load_connectors(c.db.get(CreatorProfile, c.tenant_id))]
+
+
+@app.put("/connectors/{name}", status_code=201)
+def put_connector(name: str, req: ConnectorIn, c: Ctx = Depends(owner)):
+    if connector_for(req.kind) is None:
+        raise HTTPException(422, f"Unbekannter Connector-Typ '{req.kind}'")
+    p = c.db.get(CreatorProfile, c.tenant_id)
+    items = [x for x in _load_connectors(p) if x["name"] != name]
+    items.append({"name": name, "kind": req.kind, "portal": req.portal, "config": req.config, "cursor": None})
+    _save_connectors(p, items)
+    audit(c, "connector.saved", name)
+    return _connector_out(items[-1])
+
+
+@app.delete("/connectors/{name}", status_code=204)
+def delete_connector(name: str, c: Ctx = Depends(owner)):
+    p = c.db.get(CreatorProfile, c.tenant_id)
+    _save_connectors(p, [x for x in _load_connectors(p) if x["name"] != name])
+    audit(c, "connector.deleted", name)
+
+
+@app.post("/connectors/poll")
+def poll_connectors(c: Ctx = Depends(editor)):
+    """One poll cycle over all configured connectors; new messages become drafts via the idempotent inbox."""
+    p = c.db.get(CreatorProfile, c.tenant_id)
+    items = _load_connectors(p)
+    report = []
+    for item in items:
+        conn = connector_for(item["kind"])
+        if conn is None:
+            report.append({"name": item["name"], "error": "Connector-Typ nicht verfügbar"})
+            continue
+        try:
+            events, cursor = conn.poll(item.get("config", {}), item.get("cursor"))
+        except Exception as e:  # a broken portal must not stop the others
+            report.append({"name": item["name"], "error": str(e)[:200]})
+            continue
+        new = dup = 0
+        for ev in events:
+            ev = sanitize_event(ev)
+            out = _ingest_event(c.db, c.tenant_id, InboundEvent(
+                portal=ev.portal or item["portal"], event_id=ev.event_id, portal_user_id=ev.portal_user_id,
+                nickname=ev.nickname, text=ev.text, sent_at=ev.sent_at))
+            if out["duplicate"]:
+                dup += 1
+            else:
+                new += 1
+        item["cursor"] = cursor
+        report.append({"name": item["name"], "new": new, "duplicates": dup})
+    _save_connectors(p, items)
+    audit(c, "connectors.polled", f"{len(items)} connectors")
+    return report
 
 
 class ImportMessage(BaseModel):

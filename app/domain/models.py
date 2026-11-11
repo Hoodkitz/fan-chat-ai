@@ -78,6 +78,7 @@ class CreatorProfile(Base):
     style = Column(JSONB, nullable=True)                      # learned writing style
     auto_outreach_days = Column(Integer, nullable=False, default=14)
     webhook_secret = Column(EncryptedText, nullable=True)       # HMAC secret for portal webhooks
+    connectors = Column(EncryptedText, nullable=True)           # JSON list [{name, kind, portal, config, cursor}]
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
