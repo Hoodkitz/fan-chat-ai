@@ -183,3 +183,10 @@ def test_import_is_idempotent(acc):
     assert r["messages_imported"] == 0 and r["messages_skipped"] == 2
     fid = a.get("/fans").json()[0]["id"]
     assert len(a.get(f"/fans/{fid}").json()["messages"]) == 2
+
+
+def test_dashboard_served(client):
+    r = client.get("/app")
+    assert r.status_code == 200 and "Fan Chat Assistent" in r.text and "Freigabe" in r.text
+    assert "default-src 'self'" in r.headers["content-security-policy"]
+    assert client.get("/").status_code == 200

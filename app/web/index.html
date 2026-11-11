@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fan Chat Assistent</title>
+<style>
+  :root{--bg:#0f1115;--card:#171a21;--line:#2a2f3a;--fg:#e8eaf0;--muted:#9aa3b2;--ok:#2ecc71;--warn:#f1c40f;--bad:#e74c3c;--acc:#7c5cff}
+  @media (prefers-color-scheme: light){:root{--bg:#f6f7fb;--card:#fff;--line:#e3e6ee;--fg:#14161c;--muted:#5d6675}}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;gap:12px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg)}
+  header h1{font-size:17px;margin:0;flex:1} main{max-width:960px;margin:0 auto;padding:16px}
+  nav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px} nav button{flex:1;min-width:110px}
+  button{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:9px 12px;font:inherit;cursor:pointer}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#fff} button.ok{border-color:var(--ok)} button.bad{border-color:var(--bad)}
+  button[aria-pressed=true]{border-color:var(--acc);box-shadow:inset 0 0 0 1px var(--acc)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+  .muted{color:var(--muted);font-size:13px} .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  textarea,input{width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:9px;font:inherit}
+  textarea{min-height:90px} .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line)}
+  .badge.escalated{border-color:var(--bad);color:var(--bad)} .badge.pending{border-color:var(--warn);color:var(--warn)} .badge.approved{border-color:var(--ok);color:var(--ok)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px} .kpi b{font-size:22px;display:block}
+  .hidden{display:none} #toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--card);border:1px solid var(--line);padding:10px 14px;border-radius:10px}
+  .notice{border-left:3px solid var(--acc);padding-left:10px}
+</style>
+</head>
+<body>
+<header><h1>Fan Chat Assistent</h1><span id="who" class="muted"></span><button id="logout" class="hidden">Abmelden</button></header>
+<main>
+  <section id="login" class="card">
+    <p class="notice muted">Die KI schreibt nur Entwürfe. Gesendet wird, was du hier freigibst. Jede KI-unterstützte Nachricht trägt einen sichtbaren Hinweis.</p>
+    <form id="loginForm" class="row">
+      <input id="email" type="email" placeholder="E-Mail" required autocomplete="username">
+      <input id="password" type="password" placeholder="Passwort" required autocomplete="current-password">
+      <button class="primary" type="submit">Anmelden</button>
+    </form>
+    <p id="loginErr" class="muted"></p>
+  </section>
+
+  <section id="app" class="hidden">
+    <nav>
+      <button data-tab="queue" aria-pressed="true">Freigabe</button>
+      <button data-tab="escalations">Eskalationen</button>
+      <button data-tab="fans">Fans</button>
+      <button data-tab="stats">Statistik</button>
+    </nav>
+    <div id="tab-queue"></div>
+    <div id="tab-escalations" class="hidden"></div>
+    <div id="tab-fans" class="hidden"></div>
+    <div id="tab-stats" class="hidden"></div>
+  </section>
+</main>
+<div id="toast" class="hidden"></div>
+<script>
+const $ = s => document.querySelector(s);
+let token = null; try { token = sessionStorage.getItem("fc_token"); } catch (e) {}
+const api = async (path, opts = {}) => {
+  const r = await fetch(path, {...opts, headers: {"Content-Type": "application/json", ...(token ? {Authorization: "Bearer " + token} : {}), ...(opts.headers || {})}});
+  if (r.status === 401) { logout(); throw new Error("Sitzung abgelaufen"); }
+  const data = r.status === 204 ? null : await r.json().catch(() => null);
+  if (!r.ok) throw new Error((data && (data.detail?.[0]?.msg || data.detail)) || r.statusText);
+  return data;
+};
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const toast = m => { const t = $("#toast"); t.textContent = m; t.classList.remove("hidden"); setTimeout(() => t.classList.add("hidden"), 2500); };
+const fmt = d => d ? new Date(d).toLocaleString("de-DE", {dateStyle: "short", timeStyle: "short"}) : "–";
+
+function logout() { token = null; try { sessionStorage.removeItem("fc_token"); } catch (e) {} $("#app").classList.add("hidden"); $("#login").classList.remove("hidden"); $("#logout").classList.add("hidden"); $("#who").textContent = ""; }
+
+$("#loginForm").addEventListener("submit", async e => {
+  e.preventDefault(); $("#loginErr").textContent = "";
+  try {
+    const d = await api("/auth/login", {method: "POST", body: JSON.stringify({email: $("#email").value, password: $("#password").value})});
+    token = d.access_token; try { sessionStorage.setItem("fc_token", token); } catch (e) {}
+    start();
+  } catch (err) { $("#loginErr").textContent = err.message; }
+});
+$("#logout").addEventListener("click", logout);
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => show(b.dataset.tab)));
+
+let fans = {};
+async function start() {
+  $("#login").classList.add("hidden"); $("#app").classList.remove("hidden"); $("#logout").classList.remove("hidden");
+  const p = await api("/profile"); $("#who").textContent = p.display_name;
+  await loadFans(); show("queue");
+}
+function show(tab) {
+  document.querySelectorAll("nav button").forEach(b => b.setAttribute("aria-pressed", b.dataset.tab === tab));
+  ["queue", "escalations", "fans", "stats"].forEach(t => $("#tab-" + t).classList.toggle("hidden", t !== tab));
+  ({queue: renderQueue, escalations: renderEscalations, fans: renderFans, stats: renderStats})[tab]();
+}
+async function loadFans() { fans = {}; (await api("/fans")).forEach(f => fans[f.id] = f); }
+const fanName = id => (fans[id]?.nickname || "Fan") + " · " + (fans[id]?.portal || "");
+
+function draftCard(d, escalated) {
+  const el = document.createElement("div"); el.className = "card";
+  el.innerHTML = `
+    <div class="row"><span class="badge ${esc(d.status)}">${esc(d.status)}</span><b>${esc(fanName(d.fan_id))}</b>
+      <span class="muted">${esc(d.kind)} · ${esc(d.reason || "")} · ${fmt(d.created_at)}</span></div>
+    ${escalated ? `<p class="notice"><b>Bitte selbst antworten:</b> ${esc(d.escalation_reason)}</p>` : ""}
+    <textarea aria-label="Nachrichtentext">${esc(d.body || "")}</textarea>
+    <div class="row">
+      <button class="ok" data-act="approve">${escalated ? "Eigene Antwort freigeben" : "Freigeben"}</button>
+      <button class="bad" data-act="reject">Verwerfen</button>
+      <button data-act="history">Verlauf</button>
+    </div>
+    <div class="history muted hidden"></div>`;
+  el.querySelector("[data-act=approve]").onclick = async () => {
+    const body = el.querySelector("textarea").value.trim();
+    if (escalated && !body) return toast("Bitte eigene Antwort schreiben");
+    try {
+      await api(`/drafts/${d.id}/decision`, {method: "POST", body: JSON.stringify({approve: true, body: body || null})});
+      const r = await api(`/drafts/${d.id}/send`, {method: "POST"});
+      if (r.delivery && r.delivery.mode === "manual") {
+        await navigator.clipboard?.writeText(r.text).catch(() => {});
+        toast("Freigegeben – Text in Zwischenablage (manuell senden)");
+      } else toast("Gesendet");
+      el.remove();
+    } catch (err) { toast(err.message); }
+  };
+  el.querySelector("[data-act=reject]").onclick = async () => {
+    try { await api(`/drafts/${d.id}/decision`, {method: "POST", body: JSON.stringify({approve: false})}); el.remove(); toast("Verworfen"); }
+    catch (err) { toast(err.message); }
+  };
+  el.querySelector("[data-act=history]").onclick = async () => {
+    const h = el.querySelector(".history"); h.classList.toggle("hidden");
+    if (!h.dataset.loaded) {
+      const f = await api(`/fans/${d.fan_id}`);
+      h.innerHTML = f.messages.slice(-8).map(m => `<div><b>${m.direction === "in" ? "Fan" : "Ich"}:</b> ${esc(m.body)}</div>`).join("") || "(kein Verlauf)";
+      h.dataset.loaded = "1";
+    }
+  };
+  return el;
+}
+async function renderList(target, status, escalated) {
+  const box = $(target); box.innerHTML = '<p class="muted">Lade…</p>';
+  const ds = await api(`/drafts?status=${status}`);
+  box.innerHTML = ds.length ? "" : `<p class="card muted">Nichts offen.</p>`;
+  ds.forEach(d => box.appendChild(draftCard(d, escalated)));
+}
+const renderQueue = () => renderList("#tab-queue", "pending", false);
+const renderEscalations = () => renderList("#tab-escalations", "escalated", true);
+
+async function renderFans() {
+  await loadFans();
+  const box = $("#tab-fans");
+  box.innerHTML = `<div class="card row"><button class="primary" id="outreach">Kontaktpflege-Entwürfe erzeugen</button><span class="muted">Geburtstage und lange Funkstille – als Entwürfe in die Freigabe.</span></div>` +
+    Object.values(fans).map(f => `<div class="card"><div class="row"><b>${esc(f.nickname || "Fan")}</b><span class="badge">${esc(f.portal)}</span>
+      ${f.do_not_contact ? '<span class="badge escalated">Kontaktsperre</span>' : ""}<span class="muted">Umsatz ${Number(f.total_spent).toFixed(2)} € · letzter Kontakt ${fmt(f.last_contact_at)}</span></div>
+      ${f.notes ? `<div class="muted">${esc(f.notes)}</div>` : ""}</div>`).join("");
+  $("#outreach").onclick = async () => { try { const r = await api("/outreach/generate", {method: "POST"}); toast(`${r.length} Entwürfe erzeugt`); } catch (err) { toast(err.message); } };
+}
+async function renderStats() {
+  const s = await api("/stats");
+  const d = s.drafts || {};
+  $("#tab-stats").innerHTML = `<div class="grid">
+    <div class="card kpi"><b>${s.fans}</b><span class="muted">Fans</span></div>
+    <div class="card kpi"><b>${Number(s.revenue).toFixed(0)} €</b><span class="muted">Umsatz</span></div>
+    <div class="card kpi"><b>${d.pending || 0}</b><span class="muted">offen</span></div>
+    <div class="card kpi"><b>${d.escalated || 0}</b><span class="muted">eskaliert</span></div>
+    <div class="card kpi"><b>${d.sent || 0}</b><span class="muted">gesendet</span></div>
+    <div class="card kpi"><b>${d.rejected || 0}</b><span class="muted">verworfen</span></div></div>
+    <div class="card"><b>Je Portal</b>${Object.entries(s.per_portal || {}).map(([p, v]) => `<div class="row"><span class="badge">${esc(p)}</span><span class="muted">${v.fans} Fans · ${Number(v.revenue).toFixed(0)} € · ${v.messages_in} ein / ${v.messages_out} aus</span></div>`).join("") || '<p class="muted">keine Daten</p>'}</div>
+    <div class="card"><b>Top-Fans</b>${(s.top_fans || []).map(f => `<div class="row"><span>${esc(f.nickname || "Fan")}</span><span class="muted">${Number(f.total_spent).toFixed(2)} €</span></div>`).join("")}</div>`;
+}
+if (token) start().catch(logout);
+</script>
+</body>
+</html>

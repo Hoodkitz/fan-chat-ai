@@ -9,7 +9,10 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Literal, Optional
 
+from pathlib import Path
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -541,3 +544,14 @@ def stats(c: Ctx = Depends(ctx)):
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}
+
+
+WEB_DIR = Path(__file__).resolve().parents[1] / "web"
+
+
+@app.get("/app", include_in_schema=False)
+@app.get("/", include_in_schema=False)
+def dashboard():
+    """Creator dashboard: approval queue, escalations, fans, stats (static page on this API)."""
+    return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-store",
+                                                         "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:"})

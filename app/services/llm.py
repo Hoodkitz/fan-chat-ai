@@ -15,7 +15,11 @@ class LLM:
 
 class FakeLLM(LLM):
     def draft(self, prompt: str) -> str:
-        last = prompt.rsplit("NACHRICHT DES FANS:", 1)[-1].strip().splitlines()[0][:60] if "NACHRICHT DES FANS:" in prompt else ""
+        last = ""
+        if "NACHRICHT DES FANS:" in prompt:
+            lines = [ln for ln in prompt.rsplit("NACHRICHT DES FANS:", 1)[-1].splitlines()
+                     if ln.strip() and not ln.strip().startswith("<")]
+            last = lines[0].strip()[:60] if lines else ""
         return f"Danke dir für deine Nachricht 😊 ({last})"
 
 

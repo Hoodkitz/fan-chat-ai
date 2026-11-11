@@ -43,7 +43,7 @@ werden eskaliert: Dafür erzeugt die KI keinen Text, die Creatorin antwortet sel
 | Antworten | eingehende Nachricht → Entwurf (RAG aus Profil, Fan, Verlauf, Käufen) → `/drafts/{id}/decision` → `/send` |
 | Kontaktpflege | `POST /outreach/generate`: Entwürfe zu Geburtstagen und Funkstille, keine Duplikate |
 | Eskalation | `app/services/rules.py` |
-| Dashboard | `/stats` |
+| Dashboard | Web-Oberfläche unter `/app` (statisch, gleiche API, CSP): Freigabe-Queue mit Bearbeiten/Freigeben/Verwerfen, Eskalationen (eigene Antwort), Fans + Kontaktpflege, Statistik; `/stats` als JSON |
 | Portale | Adapter-Interface, nur offizielle Wege; `manual` liefert Text zum Kopieren. Eingang: `POST /inbox/events` (Connector, authentifiziert) oder `POST /webhooks/{tenant_id}` (HMAC-SHA256 über den Body, Secret via `POST /profile/webhook-secret`); beides exactly-once über die `webhook_inbox` (UNIQUE event_id, Duplikat → 200 + `duplicate: true`) |
 | Chat-Import | `POST /fans/import`: exportierte Verläufe je Portal/Fan, ohne Entwürfe; setzt letzten Kontakt, lernt Fakten |
 | Langzeitgedächtnis | `memory_facts` je Fan (Text PII-redaktiert und verschlüsselt; im Klartext nur Lexeme des tsvector + Embedding; Fakten mit Injektionsmustern werden verworfen): automatisch aus Fan-Nachrichten extrahiert + manuell (`/fans/{id}/facts`); hybride Suche tsvector (german) + Embedding-Port (Hashing-Fake) mit Reciprocal Rank Fusion (k=60), `GET /fans/{id}/facts?q=` |
@@ -58,11 +58,11 @@ nur die Creatorin (Rolle owner) darf freigeben, Audit-Log, Löschen eines Fans e
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env && .venv/bin/alembic upgrade head
 .venv/bin/uvicorn app.api.main:app --reload
-LLM_PROVIDER=fake .venv/bin/pytest -q      # 24 Tests
+LLM_PROVIDER=fake .venv/bin/pytest -q      # 27 Tests
 ```
 
 Abweichungen zur Spezifikation (bewusst, MVP): kein pgvector/HNSW (Embedding als JSONB + Cosine in Python, Port austauschbar),
 kein Cross-Encoder-Reranking, keine Redis-Locks (Idempotenz über DB-UNIQUE), kein LangGraph (Draft→Decision→Send ist die State-Machine),
 Discord-Sharding/Telegram-Local-API nicht enthalten. Alles davon hinter Ports, siehe `nexussaas/projects/03-fan-chat-ai.md`.
 
-Offen: Web-Dashboard, konkrete Portal-Connectoren (nur offizielle APIs), echtes Embedding-Modell + Reranker.
+Offen: konkrete Portal-Connectoren (nur offizielle APIs), echtes Embedding-Modell + Reranker, PWA/Push für das Dashboard.
