@@ -33,6 +33,7 @@ class Settings:
         self.GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self.GEMINI_API_KEY_FILE = os.getenv("GEMINI_API_KEY_FILE", str(Path.home() / ".secrets" / "gemini_api_key"))
         self.FIELD_ENCRYPTION_KEY = os.getenv("FIELD_ENCRYPTION_KEY", "")
+        self.AUTH_RATE_PER_MINUTE = int(os.getenv("AUTH_RATE_PER_MINUTE", "20"))  # login/register per client IP
         self.STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
         self.STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
         self.STRIPE_PRICE_PRO = os.getenv("STRIPE_PRICE_PRO", "")

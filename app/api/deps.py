@@ -46,13 +46,13 @@ def ctx(creds: HTTPAuthorizationCredentials | None = Depends(bearer)):
         db.close()
 
 
-def owner(c: Ctx = Depends(ctx)) -> Ctx:
+def owner(c: Ctx = Depends(ctx, scope="function")) -> Ctx:
     if c.role != "owner":
         raise HTTPException(403, "Nur die Creatorin selbst darf das")
     return c
 
 
-def editor(c: Ctx = Depends(ctx)) -> Ctx:
+def editor(c: Ctx = Depends(ctx, scope="function")) -> Ctx:
     if c.role not in ("owner", "assistant"):
         raise HTTPException(403, "Keine Berechtigung")
     return c

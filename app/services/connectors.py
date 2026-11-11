@@ -5,11 +5,12 @@ A connector returns normalised events; the inbox (UNIQUE event_id) makes repeate
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -31,6 +32,10 @@ def export_path(tenant_id, name: str) -> Path:
     if target.parent != base or target.is_symlink():
         raise ValueError("invalid export path")
     return target
+
+
+def _utc(v: datetime) -> datetime:
+    return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
 
 
 @dataclass
@@ -77,11 +82,13 @@ class ExportFileConnector:
             data = json.load(fh)
         events = []
         for i, item in enumerate(data if isinstance(data, list) else data.get("messages", [])):
-            eid = str(item.get("id") or f"{path}:{i}")
+            # without a portal id: content hash (stable across re-uploads, never the server path or list index)
+            eid = str(item.get("id") or "h:" + hashlib.sha256("|".join(
+                str(item.get(k) or "") for k in ("user_id", "from", "sent_at", "text")).encode()).hexdigest()[:40])
             events.append(PortalEvent(portal=config.get("_portal", "export"), event_id=eid,
                                       portal_user_id=str(item.get("user_id") or item.get("from") or "unknown"),
                                       nickname=item.get("nickname"), text=str(item.get("text") or ""),
-                                      sent_at=datetime.fromisoformat(item["sent_at"]) if item.get("sent_at") else None))
+                                      sent_at=_utc(datetime.fromisoformat(item["sent_at"])) if item.get("sent_at") else None))
         return [e for e in events if e.text.strip()], cursor
 
 

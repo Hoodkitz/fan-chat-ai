@@ -74,7 +74,7 @@ const $ = s => document.querySelector(s);
 let token = null; try { token = sessionStorage.getItem("fc_token"); } catch (e) {}
 const api = async (path, opts = {}) => {
   const r = await fetch(path, {...opts, headers: {"Content-Type": "application/json", ...(token ? {Authorization: "Bearer " + token} : {}), ...(opts.headers || {})}});
-  if (r.status === 401) { logout(); throw new Error("Sitzung abgelaufen"); }
+  if (r.status === 401 && !path.startsWith("/auth/")) { logout(); throw new Error("Sitzung abgelaufen"); }
   const data = r.status === 204 ? null : await r.json().catch(() => null);
   if (!r.ok) throw new Error((data && (data.detail?.[0]?.msg || data.detail)) || r.statusText);
   return data;
@@ -134,7 +134,7 @@ function draftCard(d, escalated) {
     ${escalated ? `<p class="notice"><b>Bitte selbst antworten:</b> ${esc(d.escalation_reason)}</p>` : ""}
     <textarea aria-label="Nachrichtentext">${esc(d.body || "")}</textarea>
     <div class="row">
-      <button class="ok" data-act="approve">${escalated ? "Eigene Antwort freigeben" : "Freigeben"}</button>
+      <button class="ok" data-act="approve">${d.status === "approved" ? "Erneut senden" : escalated ? "Eigene Antwort freigeben" : "Freigeben"}</button>
       <button class="bad" data-act="reject">Verwerfen</button>
       <button data-act="history">Verlauf</button>
     </div>
@@ -143,7 +143,9 @@ function draftCard(d, escalated) {
     const body = el.querySelector("textarea").value.trim();
     if (escalated && !body) return toast("Bitte eigene Antwort schreiben");
     try {
-      await api(`/drafts/${d.id}/decision`, {method: "POST", body: JSON.stringify({approve: true, body: body || null})});
+      if (d.status !== "approved")
+        await api(`/drafts/${d.id}/decision`, {method: "POST", body: JSON.stringify({approve: true, body: body || null})});
+      d.status = "approved";
       const r = await api(`/drafts/${d.id}/send`, {method: "POST"});
       if (r.delivery && r.delivery.mode === "manual") {
         await navigator.clipboard?.writeText(r.text).catch(() => {});
@@ -169,7 +171,11 @@ function draftCard(d, escalated) {
 async function renderList(target, status, escalated) {
   const box = $(target); box.innerHTML = '<p class="muted">Lade…</p>';
   const ds = await api(`/drafts?status=${status}`);
-  box.innerHTML = ds.length ? "" : `<p class="card muted">Nichts offen.</p>`;
+  if (ds.some(d => !fans[d.fan_id])) await loadFans();  // fans created meanwhile by webhook/poll
+  // approved but not yet delivered (e.g. sending failed): offer to send again
+  const stuck = status === "pending" ? await api("/drafts?status=approved") : [];
+  box.innerHTML = ds.length || stuck.length ? "" : `<p class="card muted">Nichts offen.</p>`;
+  stuck.forEach(d => box.appendChild(draftCard(d, false)));
   ds.forEach(d => box.appendChild(draftCard(d, escalated)));
 }
 const renderQueue = () => renderList("#tab-queue", "pending", false);

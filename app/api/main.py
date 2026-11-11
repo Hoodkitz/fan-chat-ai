@@ -9,11 +9,11 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import AfterValidator, BaseModel, EmailStr, Field
 from sqlalchemy import case, func, update
 from sqlalchemy.exc import IntegrityError
 
@@ -47,8 +47,39 @@ from app.services.portals import adapter_for
 from app.services.retrieval import search_facts
 from app.services.style import analyze_style
 
+def _aware(v: Optional[datetime]) -> Optional[datetime]:
+    """Portal exports often carry naive timestamps: treat them as UTC so comparisons with stored values work."""
+    if v is not None and v.tzinfo is None:
+        return v.replace(tzinfo=timezone.utc)
+    return v
+
+
+AwareDT = Annotated[Optional[datetime], AfterValidator(_aware)]
+
 app = FastAPI(title="Fan Chat AI", version="0.3.0")
 MAX_FAILED_LOGINS = 5
+_auth_hits: dict[str, list[float]] = {}
+
+
+@app.middleware("http")
+async def throttle_auth(request: Request, call_next):
+    """Per-IP limit on login/registration (20/min): slows guessing and stops locking out other people's accounts
+    at scale. In-memory; behind a proxy put the same limit on the proxy."""
+    if request.url.path.startswith("/auth/") and request.method == "POST":
+        import time
+        from fastapi.responses import JSONResponse
+        ip = request.client.host if request.client else "?"
+        now = time.monotonic()
+        hits = [t for t in _auth_hits.get(ip, []) if now - t < 60]
+        if len(hits) >= settings.AUTH_RATE_PER_MINUTE:
+            return JSONResponse({"detail": "Zu viele Versuche – bitte kurz warten"}, status_code=429,
+                                headers={"Retry-After": "60"})
+        hits.append(now)
+        _auth_hits[ip] = hits
+        if len(_auth_hits) > 50_000:
+            for k in [k for k, v in _auth_hits.items() if not v or now - v[-1] > 60]:
+                _auth_hits.pop(k, None)
+    return await call_next(request)
 log = logging.getLogger("fanchat.api")
 
 
@@ -106,18 +137,19 @@ def login(req: LoginIn):
                            .values(failed_logins=case((User.locked_until.is_not(None), 1),  # lock expired: restart
                                                       else_=User.failed_logins + 1),
                                    locked_until=None).returning(User.failed_logins)).scalar()
-            if n is None:
-                db.commit()
-                verify_password(req.password, None)  # equal timing
-                raise denied
-            if n >= MAX_FAILED_LOGINS:
-                db.execute(update(User).where(User.id == user.id)
-                           .values(locked_until=func.now() + timedelta(minutes=15)))
             db.commit()
+            if n is None:
+                verify_password(req.password, None)  # locked: equal timing, same answer
+                raise denied
+            if n > MAX_FAILED_LOGINS:  # parallel guesses raced past the limit: lock (expires, counter restarts)
+                db.execute(update(User).where(User.id == user.id).values(locked_until=func.now() + timedelta(minutes=15)))
+                db.commit()
+                raise denied
         if not verify_password(req.password, user.hashed_password if user else None):
+            if user is not None and n >= MAX_FAILED_LOGINS:  # that was the last allowed failure
+                db.execute(update(User).where(User.id == user.id).values(locked_until=func.now() + timedelta(minutes=15)))
+                db.commit()
             raise denied
-        if n >= MAX_FAILED_LOGINS:
-            raise denied  # this attempt used the last allowance; lock wins even with a correct password
         db.execute(update(User).where(User.id == user.id).values(failed_logins=0, locked_until=None))
         db.commit()
         set_context(db, None, user.id)
@@ -147,7 +179,7 @@ def _profile_out(p: CreatorProfile) -> dict:
 
 
 @app.get("/profile")
-def get_profile(c: Ctx = Depends(ctx)):
+def get_profile(c: Ctx = Depends(ctx, scope="function")):
     return _profile_out(c.db.get(CreatorProfile, c.tenant_id))
 
 
@@ -209,12 +241,12 @@ def create_fan(req: FanIn, c: Ctx = Depends(editor)):
 
 
 @app.get("/fans")
-def list_fans(c: Ctx = Depends(ctx)):
+def list_fans(c: Ctx = Depends(ctx, scope="function")):
     return [_fan_out(f) for f in c.db.query(Fan).filter(Fan.tenant_id == c.tenant_id).order_by(Fan.created_at)]
 
 
 @app.get("/fans/{fan_id}")
-def get_fan(fan_id: str, c: Ctx = Depends(ctx)):
+def get_fan(fan_id: str, c: Ctx = Depends(ctx, scope="function")):
     f = _fan(c, fan_id)
     msgs = c.db.query(Message).filter(Message.fan_id == f.id).order_by(Message.sent_at).all()
     return {**_fan_out(f), "messages": [{"direction": m.direction, "body": m.body, "ai_assisted": m.ai_assisted,
@@ -260,14 +292,15 @@ class PurchaseIn(BaseModel):
 def add_purchase(fan_id: str, req: PurchaseIn, c: Ctx = Depends(editor)):
     f = _fan(c, fan_id)
     c.db.add(Purchase(tenant_id=c.tenant_id, fan_id=f.id, item=req.item, amount=req.amount))
-    f.total_spent = (f.total_spent or 0) + req.amount
+    c.db.execute(update(Fan).where(Fan.id == f.id).values(total_spent=func.coalesce(Fan.total_spent, 0) + req.amount))
+    c.db.refresh(f, ["total_spent"])  # atomic increment: parallel purchases never lose an update
     return _fan_out(f)
 
 
 class MessageIn(BaseModel):
     direction: Literal["in", "out"]
     body: str = Field(min_length=1, max_length=5000)
-    sent_at: Optional[datetime] = None
+    sent_at: AwareDT = None
     create_draft: bool = True
 
 
@@ -309,7 +342,7 @@ def add_fan_fact(fan_id: str, req: FactIn, c: Ctx = Depends(editor)):
 
 
 @app.get("/fans/{fan_id}/facts")
-def list_fan_facts(fan_id: str, q: Optional[str] = None, c: Ctx = Depends(ctx)):
+def list_fan_facts(fan_id: str, q: Optional[str] = None, c: Ctx = Depends(ctx, scope="function")):
     f = _fan(c, fan_id)
     if q:
         return [_fact_out(x) for x in search_facts(c.db, f.id, q, limit=10)]
@@ -335,7 +368,7 @@ class InboundEvent(BaseModel):
     portal_user_id: str = Field(min_length=1, max_length=200)
     nickname: Optional[str] = Field(default=None, max_length=120)
     text: str = Field(min_length=1, max_length=5000)
-    sent_at: Optional[datetime] = None
+    sent_at: AwareDT = None
 
 
 def _ingest_event(db, tenant_id, ev: InboundEvent) -> dict:
@@ -516,7 +549,7 @@ def poll_connectors(c: Ctx = Depends(editor)):
 class ImportMessage(BaseModel):
     direction: Literal["in", "out"]
     body: str = Field(min_length=1, max_length=5000)
-    sent_at: Optional[datetime] = None
+    sent_at: AwareDT = None
 
 
 class ImportFan(BaseModel):
@@ -587,7 +620,7 @@ def _draft(c: Ctx, draft_id: str, lock=False) -> Draft:
 
 
 @app.get("/drafts")
-def list_drafts(status: Optional[str] = None, c: Ctx = Depends(ctx)):
+def list_drafts(status: Optional[str] = None, c: Ctx = Depends(ctx, scope="function")):
     q = c.db.query(Draft).filter(Draft.tenant_id == c.tenant_id)
     if status:
         q = q.filter(Draft.status == status)
@@ -606,6 +639,9 @@ def decide(draft_id: str, req: DecisionIn, c: Ctx = Depends(owner)):
     if d.status not in (DraftStatus.PENDING.value, DraftStatus.ESCALATED.value):
         raise HTTPException(409, f"Entwurf ist bereits {d.status}")
     if req.approve:
+        fan = c.db.get(Fan, d.fan_id)
+        if fan is not None and fan.do_not_contact:
+            raise HTTPException(409, "Fan möchte nicht kontaktiert werden – Freigabe nicht möglich")
         if d.status == DraftStatus.ESCALATED.value and not req.body:
             raise HTTPException(422, "Eskalation: bitte eigene Antwort schreiben")
         if req.body:
@@ -644,7 +680,7 @@ def outreach(c: Ctx = Depends(editor)):
 
 
 @app.get("/stats")
-def stats(c: Ctx = Depends(ctx)):
+def stats(c: Ctx = Depends(ctx, scope="function")):
     q = c.db.query(Draft).filter(Draft.tenant_id == c.tenant_id)
     by = {}
     for d in q:
@@ -697,7 +733,7 @@ class CheckoutIn(BaseModel):
 
 
 @app.get("/billing")
-def billing_status(c: Ctx = Depends(ctx)):
+def billing_status(c: Ctx = Depends(ctx, scope="function")):
     t = c.db.get(Tenant, c.tenant_id)
     return {"plan": t.plan, "trial_ends_at": t.trial_ends_at, "ai_enabled": billing.ai_allowed(t),
             "has_subscription": bool(t.stripe_customer_id)}

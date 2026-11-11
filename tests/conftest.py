@@ -3,6 +3,7 @@ import uuid
 
 os.environ["LLM_PROVIDER"] = "fake"
 os.environ.setdefault("ENV", "test")
+os.environ.setdefault("AUTH_RATE_PER_MINUTE", "100000")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

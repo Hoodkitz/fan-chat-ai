@@ -115,7 +115,8 @@ def create_outreach_drafts(db: Session, tenant_id, today: date | None = None) ->
         return drafts  # outreach is purely AI-generated: paused without an active plan
     for fan, why in outreach_candidates(db, tenant_id, today):
         open_exists = db.query(Draft.id).filter(Draft.fan_id == fan.id, Draft.kind == "outreach",
-                                                Draft.status == DraftStatus.PENDING.value).first()
+                                                Draft.status.in_([DraftStatus.PENDING.value,
+                                                                  DraftStatus.ESCALATED.value])).first()
         if open_exists:
             continue
         history = db.query(Message).filter(Message.fan_id == fan.id).order_by(Message.sent_at).all()
