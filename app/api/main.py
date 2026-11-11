@@ -746,6 +746,12 @@ def billing_checkout(req: CheckoutIn, c: Ctx = Depends(owner)):
     if not price:
         raise HTTPException(503, "Zahlungen sind noch nicht eingerichtet")
     t = c.db.get(Tenant, c.tenant_id)
+    if t.plan in (Plan.PRO.value, Plan.AGENCY.value) and t.stripe_customer_id:
+        raise HTTPException(409, "Es besteht bereits ein Abo – Tarifwechsel bitte über „Abo verwalten“")
+    import time as _time
+    last = _recent_checkouts.get(str(t.id))
+    if last and _time.monotonic() - last[0] < 600:
+        return {"url": last[1]}  # double click / second tab: same checkout session, never two subscriptions
     base = settings.PUBLIC_BASE_URL.rstrip("/")
     form = [("mode", "subscription"), ("line_items[0][price]", price), ("line_items[0][quantity]", "1"),
             ("success_url", f"{base}/app/?billing=success"), ("cancel_url", f"{base}/app/?billing=cancel"),
@@ -754,9 +760,14 @@ def billing_checkout(req: CheckoutIn, c: Ctx = Depends(owner)):
     if t.stripe_customer_id:
         form.append(("customer", t.stripe_customer_id))
     try:
-        return {"url": billing.stripe_post("checkout/sessions", form)["url"]}
+        url = billing.stripe_post("checkout/sessions", form)["url"]
     except billing.BillingError as e:
         raise HTTPException(502, str(e))
+    _recent_checkouts[str(t.id)] = (_time.monotonic(), url)
+    return {"url": url}
+
+
+_recent_checkouts: dict[str, tuple[float, str]] = {}
 
 
 @app.post("/billing/portal")
@@ -808,6 +819,11 @@ async def billing_webhook(request: Request, sig: Optional[str] = Header(None, al
                     pass  # older than the state already applied (Stripe does not guarantee ordering)
                 elif etype.startswith("customer.subscription."):
                     t.billing_event_at = created
+                    live = billing.customer_plan(t.stripe_customer_id)  # truth = all live subscriptions
+                    if live is not None:
+                        t.plan = live.value
+                        db.commit()
+                        return {"received": True}
                     prices = [((i.get("price") or {}).get("id")) for i in ((obj.get("items") or {}).get("data") or [])]
                     plan = billing.plan_for_prices(prices)
                     active = obj.get("status") in ("active", "trialing") and etype != "customer.subscription.deleted"

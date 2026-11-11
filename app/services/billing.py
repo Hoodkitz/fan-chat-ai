@@ -65,3 +65,22 @@ def stripe_post(path: str, form: list[tuple[str, str]]) -> dict:
     if r.status_code >= 400:
         raise BillingError("Zahlungsanbieter hat die Anfrage abgelehnt")
     return r.json()
+
+
+def customer_plan(customer: str | None) -> Plan | None:
+    """Best plan over ALL live subscriptions of the customer (None = Stripe not configured/reachable)."""
+    if not customer or not settings.STRIPE_SECRET_KEY:
+        return None
+    try:
+        r = httpx.get(f"{STRIPE}/subscriptions", params={"customer": customer, "status": "all", "limit": 20},
+                      auth=(settings.STRIPE_SECRET_KEY, ""), timeout=15)
+        r.raise_for_status()
+    except httpx.HTTPError:
+        return None
+    best = Plan.INACTIVE
+    for sub in r.json().get("data", []):
+        if sub.get("status") in ("active", "trialing"):
+            p = plan_for_prices([((i.get("price") or {}).get("id")) for i in (sub.get("items") or {}).get("data", [])])
+            if p == Plan.AGENCY or (p == Plan.PRO and best == Plan.INACTIVE):
+                best = p
+    return best

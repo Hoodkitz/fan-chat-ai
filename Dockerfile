@@ -11,4 +11,6 @@ USER app
 EXPOSE 8000
 HEALTHCHECK CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"
 # Migrationen separat als Owner ausfuehren: docker run ... alembic upgrade head
+# Behind a reverse proxy set FORWARDED_ALLOW_IPS to the proxy address, so IP rate limits see real clients.
+ENV FORWARDED_ALLOW_IPS=127.0.0.1
 CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
