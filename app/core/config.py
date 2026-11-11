@@ -20,7 +20,16 @@ class Settings:
         self.ACCESS_TOKEN_MINUTES = int(os.getenv("ACCESS_TOKEN_MINUTES", "60"))
         # Fans must always be able to tell that a reply was AI-assisted (EU AI Act Art. 50).
         self.AI_DISCLOSURE = os.getenv("AI_DISCLOSURE", "🤖 KI-unterstützte Nachricht, von {model} freigegeben")
-        self.LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")  # gemini | fake
+        self.LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")  # gemini | anthropic | openai | fake
+        secrets_dir = Path.home() / ".secrets"
+        self.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+        self.ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+        self.ANTHROPIC_API_KEY_FILE = os.getenv("ANTHROPIC_API_KEY_FILE", str(secrets_dir / "anthropic_api_key"))
+        self.ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5")
+        self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+        self.OPENAI_API_KEY_FILE = os.getenv("OPENAI_API_KEY_FILE", str(secrets_dir / "openai_api_key"))
+        self.OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        self.OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self.GEMINI_API_KEY_FILE = os.getenv("GEMINI_API_KEY_FILE", str(Path.home() / ".secrets" / "gemini_api_key"))
         self.FIELD_ENCRYPTION_KEY = os.getenv("FIELD_ENCRYPTION_KEY", "")

@@ -172,3 +172,24 @@ def test_partial_update_keeps_contact_block(acc, fan):
     f = fan(a, do_not_contact=True)
     r = a.c.patch(f"/fans/{f['id']}", headers=a.h, json={"notes": "neu"})
     assert r.status_code == 200 and r.json()["do_not_contact"] is True and r.json()["notes"] == "neu"
+
+
+def test_llm_outage_escalates_instead_of_500(acc, fan):
+    from app.services import llm
+
+    class Down(llm.LLM):
+        def draft(self, prompt):
+            raise llm.LLMError("LLM busy (HTTP 503)")
+
+    a = acc()
+    f = fan(a)
+    old = llm.get_llm()
+    llm.set_llm(Down())
+    try:
+        r = a.post(f"/fans/{f['id']}/messages", json={"direction": "in", "body": "Hey, wie geht's?"})
+    finally:
+        llm.set_llm(old)
+    assert r.status_code == 201, r.text
+    drafts = a.get("/drafts").json()
+    mine = [d for d in drafts if d["fan_id"] == f["id"]]
+    assert mine and mine[0]["status"] == "escalated" and "nicht verfügbar" in mine[0]["escalation_reason"]

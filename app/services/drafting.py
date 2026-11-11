@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.models import CreatorProfile, Draft, DraftStatus, Fan, Message, Purchase
 from app.services.guardrails import input_violations, output_violations, wrap_untrusted
-from app.services.llm import get_llm
+from app.services.llm import LLMError, get_llm
 from app.services.pii import redact
 from app.services.retrieval import search_facts
 from app.services.rules import escalation_reason
@@ -72,8 +72,12 @@ def create_reply_draft(db: Session, tenant_id, fan: Fan, incoming_text: str) -> 
         history = (db.query(Message).filter(Message.fan_id == fan.id).order_by(Message.sent_at).all())
         purchases = db.query(Purchase).filter(Purchase.fan_id == fan.id).order_by(Purchase.purchased_at).all()
         facts = [f.fact for f in search_facts(db, fan.id, incoming_text)]
-        text = get_llm().draft(build_prompt(profile, fan, history, purchases, incoming_text, "Antwort auf den Fan", facts))
-        bad = output_violations(text)
+        try:
+            text = get_llm().draft(build_prompt(profile, fan, history, purchases, incoming_text, "Antwort auf den Fan",
+                                                facts))
+            bad = output_violations(text)
+        except LLMError as e:  # no 500 and no lost message: the creator answers this one herself
+            text, bad = "", [f"KI vorübergehend nicht verfügbar ({e})"]
         if bad:
             d = Draft(tenant_id=tenant_id, fan_id=fan.id, kind="reply", status=DraftStatus.ESCALATED.value,
                       escalation_reason="Entwurf blockiert: " + "; ".join(bad), reason="Eskalation")
@@ -109,8 +113,11 @@ def create_outreach_drafts(db: Session, tenant_id, today: date | None = None) ->
             continue
         history = db.query(Message).filter(Message.fan_id == fan.id).order_by(Message.sent_at).all()
         purchases = db.query(Purchase).filter(Purchase.fan_id == fan.id).all()
-        text = get_llm().draft(build_prompt(profile, fan, history, purchases, None, f"Kontaktpflege: {why}"))
-        bad = output_violations(text)
+        try:
+            text = get_llm().draft(build_prompt(profile, fan, history, purchases, None, f"Kontaktpflege: {why}"))
+            bad = output_violations(text)
+        except LLMError as e:
+            text, bad = "", [f"KI vorübergehend nicht verfügbar ({e})"]
         d = Draft(tenant_id=tenant_id, fan_id=fan.id, kind="outreach", reason=why,
                   body=None if bad else text[:MAX_DRAFT_CHARS],
                   status=DraftStatus.ESCALATED.value if bad else DraftStatus.PENDING.value,
