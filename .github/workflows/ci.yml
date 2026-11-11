@@ -9,8 +9,20 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: owner
+          POSTGRES_PASSWORD: owner
+          POSTGRES_DB: fanchat
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-retries 10
     env:
       ENV: test
+      MIGRATION_DATABASE_URL: postgresql+psycopg2://owner:owner@localhost:5432/fanchat
+      DATABASE_URL: postgresql+psycopg2://fanchat_app:ci_app_pw@localhost:5432/fanchat
+      APP_DB_PASSWORD: ci_app_pw
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,7 +35,9 @@ jobs:
           pip install -r requirements.txt pytest pytest-asyncio httpx ruff
       - name: Lint (errors only)
         run: ruff check --select E9,F63,F7,F82 .
-      - name: Tests
+      - name: Migrate (owner creates schema, RLS and the app role)
+        run: alembic upgrade head
+      - name: Tests (as RLS-restricted app role)
         run: pytest -q
   docker:
     runs-on: ubuntu-latest
