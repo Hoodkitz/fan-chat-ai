@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 from datetime import date, datetime, timezone
@@ -36,7 +37,7 @@ from app.domain.models import (
     User,
     WebhookInbox,
 )
-from app.services.connectors import connector_for, sanitize_event
+from app.services.connectors import connector_for, export_path, sanitize_event
 from app.services.drafting import create_outreach_drafts, create_reply_draft
 from app.services.memory import add_fact, remember_from_message
 from app.services.portals import adapter_for
@@ -44,6 +45,7 @@ from app.services.retrieval import search_facts
 from app.services.style import analyze_style
 
 app = FastAPI(title="Fan Chat AI", version="0.2.0")
+log = logging.getLogger("fanchat.api")
 
 
 def audit(c: Ctx, action: str, target: str | None = None):
@@ -434,21 +436,40 @@ def delete_connector(name: str, c: Ctx = Depends(owner)):
     audit(c, "connector.deleted", name)
 
 
+@app.put("/connectors/{name}/export", status_code=201)
+def upload_export(name: str, data: list[dict], c: Ctx = Depends(owner)):
+    """Store an official portal data export (JSON list) for the export_file connector of this tenant."""
+    import json
+    if len(data) > 20000:
+        raise HTTPException(413, "Maximal 20000 Einträge pro Export")
+    try:
+        path = export_path(c.tenant_id, name)
+    except ValueError:
+        raise HTTPException(422, "Ungültiger Connector-Name")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    audit(c, "connector.export_uploaded", name)
+    return {"name": name, "entries": len(data)}
+
+
 @app.post("/connectors/poll")
 def poll_connectors(c: Ctx = Depends(editor)):
-    """One poll cycle over all configured connectors; new messages become drafts via the idempotent inbox."""
-    p = c.db.get(CreatorProfile, c.tenant_id)
+    """One poll cycle over all configured connectors; new messages become drafts via the idempotent inbox.
+    The profile row is locked for the read-modify-write of the cursors."""
+    p = c.db.get(CreatorProfile, c.tenant_id, with_for_update=True)
     items = _load_connectors(p)
     report = []
     for item in items:
         conn = connector_for(item["kind"])
         if conn is None:
-            report.append({"name": item["name"], "error": "Connector-Typ nicht verfügbar"})
+            report.append({"name": item["name"], "error": "connector_unavailable"})
             continue
+        cfg = {**item.get("config", {}), "_tenant_id": str(c.tenant_id), "_name": item["name"], "_portal": item["portal"]}
         try:
-            events, cursor = conn.poll(item.get("config", {}), item.get("cursor"))
-        except Exception as e:  # a broken portal must not stop the others
-            report.append({"name": item["name"], "error": str(e)[:200]})
+            events, cursor = conn.poll(cfg, item.get("cursor"))
+        except Exception:  # a broken portal must not stop the others; details only in the server log
+            log.exception("connector %s failed (tenant %s)", item["name"], c.tenant_id)
+            report.append({"name": item["name"], "error": "poll_failed"})
             continue
         new = dup = 0
         for ev in events:

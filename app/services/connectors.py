@@ -6,12 +6,31 @@ A connector returns normalised events; the inbox (UNIQUE event_id) makes repeate
 from __future__ import annotations
 
 import json
+import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol
 
+from app.core.config import settings
 from app.services.guardrails import input_violations
 from app.services.pii import redact
+
+log = logging.getLogger("fanchat.connectors")
+SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,60}$")
+
+
+def export_path(tenant_id, name: str) -> Path:
+    """Path of a tenant's uploaded export. Only a plain file name is accepted; the result must stay
+    inside the tenant's own directory (no '..', no absolute paths, no symlinks)."""
+    if not SAFE_NAME.match(name or ""):
+        raise ValueError("invalid export name")
+    base = (Path(settings.EXPORT_DIR) / str(tenant_id)).resolve()
+    target = (base / f"{name}.json").resolve()
+    if target.parent != base or target.is_symlink():
+        raise ValueError("invalid export path")
+    return target
 
 
 @dataclass
@@ -45,22 +64,21 @@ class FakeConnector:
 
 
 class ExportFileConnector:
-    """Reads a JSON export the creator downloaded from a portal (official data export). The file path
-    is configured per tenant; every line/entry needs an id so re-reads are idempotent."""
+    """Reads a JSON export the creator uploaded (official portal data export, see PUT /connectors/{name}/export).
+    The file is addressed by the connector name inside the tenant's export directory; entries need an id so
+    re-reads are idempotent."""
     kind = "export_file"
 
     def poll(self, config: dict, cursor: str | None) -> tuple[list[PortalEvent], str | None]:
-        path = config.get("path")
-        if not path:
+        path = export_path(config.get("_tenant_id"), config.get("_name", ""))
+        if not path.exists():
             return [], cursor
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
         events = []
         for i, item in enumerate(data if isinstance(data, list) else data.get("messages", [])):
             eid = str(item.get("id") or f"{path}:{i}")
-            if cursor and eid <= cursor and item.get("id") is None:
-                continue
-            events.append(PortalEvent(portal=config.get("portal", "export"), event_id=eid,
+            events.append(PortalEvent(portal=config.get("_portal", "export"), event_id=eid,
                                       portal_user_id=str(item.get("user_id") or item.get("from") or "unknown"),
                                       nickname=item.get("nickname"), text=str(item.get("text") or ""),
                                       sent_at=datetime.fromisoformat(item["sent_at"]) if item.get("sent_at") else None))

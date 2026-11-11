@@ -28,20 +28,28 @@ def test_fake_connector_poll_is_idempotent_and_creates_drafts(acc):
     assert a.delete("/connectors/px").status_code == 204 and a.get("/connectors").json() == []
 
 
-def test_export_file_connector(acc, tmp_path):
-    path = tmp_path / "export.json"
-    path.write_text(json.dumps([
-        {"id": "m1", "user_id": "f1", "nickname": "Ben", "text": "Hi, mein Hund heißt Rex", "sent_at": "2026-03-01T10:00:00+00:00"},
-        {"id": "m2", "user_id": "f1", "text": "   "},
-    ]))
+def test_export_file_connector(acc, tmp_path, monkeypatch):
+    from app.core.config import settings
+    from app.services.connectors import export_path
+
+    monkeypatch.setattr(settings, "EXPORT_DIR", str(tmp_path))
     a = acc()
-    a.put("/connectors/exp", json={"name": "exp", "kind": "export_file", "portal": "portalY", "config": {"path": str(path)}})
+    a.put("/connectors/exp", json={"name": "exp", "kind": "export_file", "portal": "portalY"})
+    assert a.post("/connectors/poll").json() == [{"name": "exp", "new": 0, "duplicates": 0}]  # nothing uploaded yet
+    r = a.put("/connectors/exp/export", json=[
+        {"id": "m1", "user_id": "f1", "nickname": "Ben", "text": "Hi, mein Hund heißt Rex", "sent_at": "2026-03-01T10:00:00+00:00"},
+        {"id": "m2", "user_id": "f1", "text": "   "}])
+    assert r.status_code == 201 and r.json()["entries"] == 2
     assert a.post("/connectors/poll").json() == [{"name": "exp", "new": 1, "duplicates": 0}]
     assert a.post("/connectors/poll").json() == [{"name": "exp", "new": 0, "duplicates": 1}]
     fan = a.get("/fans").json()[0]
     assert any("Rex" in x["fact"] for x in a.get(f"/fans/{fan['id']}/facts").json())
-    path.unlink()
-    assert "error" in a.post("/connectors/poll").json()[0]
+    # the file lives under the tenant's own directory; names cannot escape it
+    assert str(export_path(a.tid, "exp")).startswith(str(tmp_path)) and a.tid in str(export_path(a.tid, "exp"))
+    for bad in ["../x", "/etc/passwd", "a/b", "..", "x" * 61]:
+        assert a.put(f"/connectors/{bad}/export", json=[]).status_code in (404, 422)
+    export_path(a.tid, "exp").write_text("{not json")
+    assert a.post("/connectors/poll").json()[0]["error"] == "poll_failed"
 
 
 def test_connectors_are_tenant_private(acc):
