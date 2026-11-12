@@ -7,19 +7,19 @@ from playwright.sync_api import sync_playwright
 BASE = os.getenv('BASE_URL', 'http://127.0.0.1:8000')
 
 def register(email, password, display_name):
-    r = httpx.post(BASE + '/auth/register', json={'email': email, 'password': password, 'display_name': display_name})
+    r = httpx.post(BASE + '/api/v1/auth/register', json={'email': email, 'password': password, 'display_name': display_name})
     r.raise_for_status()
     return r.json()
 
 def create_fan(token, portal='fansite', portal_user_id='fan123'):
     headers = {'Authorization': 'Bearer ' + token}
-    r = httpx.post(BASE + '/fans', json={'portal': portal, 'portal_user_id': portal_user_id, 'nickname': 'TestFan'}, headers=headers)
+    r = httpx.post(BASE + '/api/v1/fans', json={'portal': portal, 'portal_user_id': portal_user_id, 'nickname': 'TestFan'}, headers=headers)
     r.raise_for_status()
     return r.json()
 
 def generate_outreach(token):
     headers = {'Authorization': 'Bearer ' + token}
-    r = httpx.post(BASE + '/outreach/generate', headers=headers)
+    r = httpx.post(BASE + '/api/v1/outreach/generate', headers=headers)
     r.raise_for_status()
     return r.json()
 
