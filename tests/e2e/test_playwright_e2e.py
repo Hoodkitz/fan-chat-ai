@@ -18,13 +18,13 @@ def register(email, password, display_name):
 
 def create_fan(token, portal='fansite', portal_user_id='fan123'):
     headers = {'Authorization': 'Bearer ' + token}
-    r = httpx.post(BASE + '/api/v1/fans', json={'portal': portal, 'portal_user_id': portal_user_id, 'nickname': 'TestFan'}, headers=headers)
+    r = httpx.post(BASE + '/fans', json={'portal': portal, 'portal_user_id': portal_user_id, 'nickname': 'TestFan'}, headers=headers)
     r.raise_for_status()
     return r.json()
 
 def generate_outreach(token):
     headers = {'Authorization': 'Bearer ' + token}
-    r = httpx.post(BASE + '/api/v1/outreach/generate', headers=headers)
+    r = httpx.post(BASE + '/outreach/generate', headers=headers)
     r.raise_for_status()
     return r.json()
 
