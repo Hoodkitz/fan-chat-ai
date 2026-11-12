@@ -7,10 +7,10 @@ from playwright.sync_api import sync_playwright
 BASE = os.getenv('BASE_URL', 'http://127.0.0.1:8000')
 
 def register(email, password, display_name):
-    r = httpx.post(BASE + '/api/v1/auth/register', json={'email': email, 'password': password, 'display_name': display_name})
+    r = httpx.post(BASE + '/auth/register', json={'email': email, 'password': password, 'display_name': display_name})
     if r.status_code == 409:
         # already exists -> login
-        l = httpx.post(BASE + '/api/v1/auth/login', json={'email': email, 'password': password})
+        l = httpx.post(BASE + '/auth/login', json={'email': email, 'password': password})
         l.raise_for_status()
         return l.json()
     r.raise_for_status()
