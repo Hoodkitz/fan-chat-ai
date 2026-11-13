@@ -4,3 +4,7 @@ __pycache__/
 .env
 .pytest_cache/
 .ruff_cache/
+
+fanchat_e2e.db
+uvicorn_8105.log
+scripts/
