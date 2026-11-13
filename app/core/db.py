@@ -27,15 +27,32 @@ _SET_CTX = text(
 @event.listens_for(Session, "after_begin")
 def _apply_context(session: Session, transaction, connection) -> None:
     ctx = session.info.get("rls")
-    if ctx is not None:
-        connection.execute(_SET_CTX, {"t": ctx[0] or "", "u": ctx[1] or ""})
+    # set_config is a PostgreSQL-specific function. When running with SQLite
+    # (tests, local sqlite file) the function does not exist and would raise
+    # an OperationalError. Only execute the SET when the DB dialect supports
+    # it (PostgreSQL).
+    if ctx is None:
+        return
+    try:
+        dialect_name = connection.dialect.name
+    except Exception:
+        dialect_name = None
+    if dialect_name != "postgresql":
+        return
+    connection.execute(_SET_CTX, {"t": ctx[0] or "", "u": ctx[1] or ""})
 
 
 def set_context(db: Session, tenant_id: Optional[str] = None, user_id: Optional[str] = None) -> None:
     """Change the RLS context of a session (applies now and to later transactions)."""
     ctx = (str(tenant_id) if tenant_id else None, str(user_id) if user_id else None)
     db.info["rls"] = ctx
-    db.execute(_SET_CTX, {"t": ctx[0] or "", "u": ctx[1] or ""})
+    # Only attempt to set Postgres session config when the connection supports it.
+    try:
+        dial_name = db.bind.dialect.name if db.bind is not None else None
+    except Exception:
+        dial_name = None
+    if dial_name == "postgresql":
+        db.execute(_SET_CTX, {"t": ctx[0] or "", "u": ctx[1] or ""})
 
 
 def new_session(tenant_id: Optional[str] = None, user_id: Optional[str] = None) -> Session:

@@ -80,6 +80,14 @@ def create_reply_draft(db: Session, tenant_id, fan: Fan, incoming_text: str) -> 
         else:
             d = Draft(tenant_id=tenant_id, fan_id=fan.id, kind="reply", body=text[:MAX_DRAFT_CHARS],
                       status=DraftStatus.PENDING.value, reason="Antwort")
+    # Ensure consistent UUID types for DB drivers that return native UUIDs (Postgres).
+    try:
+        from app.core.config import settings
+        if settings.DATABASE_URL and settings.DATABASE_URL.startswith("postgres"):
+            import uuid as _uuid
+            d.id = _uuid.uuid4()
+    except Exception:
+        pass
     db.add(d)
     db.flush()
     return d
@@ -115,6 +123,14 @@ def create_outreach_drafts(db: Session, tenant_id, today: date | None = None) ->
                   body=None if bad else text[:MAX_DRAFT_CHARS],
                   status=DraftStatus.ESCALATED.value if bad else DraftStatus.PENDING.value,
                   escalation_reason=("Entwurf blockiert: " + "; ".join(bad)) if bad else None)
+        # Ensure native UUIDs when using Postgres to avoid driver type mismatches in RETURNING handling.
+        try:
+            from app.core.config import settings
+            if settings.DATABASE_URL and settings.DATABASE_URL.startswith("postgres"):
+                import uuid as _uuid
+                d.id = _uuid.uuid4()
+        except Exception:
+            pass
         db.add(d)
         drafts.append(d)
     db.flush()

@@ -16,7 +16,19 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
+from sqlalchemy import JSON as SQLJSON, Text, String
+from app.core.config import settings
+# Choose Postgres-specific column types only when the configured database is Postgres.
+if settings.DATABASE_URL and settings.DATABASE_URL.startswith('postgres'):
+    from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID as PG_UUID
+    def UUIDType(as_uuid: bool = True):
+        return PG_UUID(as_uuid=as_uuid)
+else:
+    JSONB = SQLJSON
+    TSVECTOR = Text
+    def UUIDType(as_uuid: bool = True):
+        # Fallback for non-Postgres (SQLite tests): use a fixed-length string to hold UUIDs.
+        return String(36)
 
 from app.core.crypto import EncryptedText
 from app.core.db import Base
@@ -37,19 +49,27 @@ class DraftStatus(str, enum.Enum):
 
 
 def _id():
-    return uuid.uuid4()
+    # Return a uuid.UUID for Postgres (when using native UUID columns),
+    # otherwise return a string UUID for SQLite/text columns.
+    try:
+        from app.core.config import settings as _settings
+        if _settings.DATABASE_URL and _settings.DATABASE_URL.startswith('postgres'):
+            return uuid.uuid4()
+    except Exception:
+        pass
+    return str(uuid.uuid4())
 
 
 class Tenant(Base):
     __tablename__ = "tenants"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=_id)
+    id = Column(UUIDType(as_uuid=True), primary_key=True, default=_id)
     name = Column(String(200), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=_id)
+    id = Column(UUIDType(as_uuid=True), primary_key=True, default=_id)
     email = Column(String(320), unique=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     token_version = Column(Integer, nullable=False, default=0)
@@ -59,16 +79,16 @@ class User(Base):
 class Membership(Base):
     __tablename__ = "memberships"
     __table_args__ = (UniqueConstraint("tenant_id", "user_id"),)
-    id = Column(UUID(as_uuid=True), primary_key=True, default=_id)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(UUIDType(as_uuid=True), primary_key=True, default=_id)
+    tenant_id = Column(UUIDType(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUIDType(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     role = Column(String(20), nullable=False, default=Role.OWNER.value)
 
 
 class CreatorProfile(Base):
     """Model-Datenbank: persona, tone, boundaries, prices."""
     __tablename__ = "creator_profiles"
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id = Column(UUIDType(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
     display_name = Column(String(120), nullable=False)
     persona = Column(EncryptedText, nullable=True)          # personality, interests
     boundaries = Column(JSONB, nullable=False, default=list)  # topics the AI must never engage in
@@ -86,8 +106,8 @@ class Fan(Base):
     """Fan-Datenbank (one record per fan and portal)."""
     __tablename__ = "fans"
     __table_args__ = (UniqueConstraint("tenant_id", "portal", "portal_user_id"),)
-    id = Column(UUID(as_uuid=True), primary_key=True, default=_id)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(UUIDType(as_uuid=True), primary_key=True, default=_id)
+    tenant_id = Column(UUIDType(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     portal = Column(String(40), nullable=False)
     portal_user_id = Column(String(200), nullable=False)
     nickname = Column(String(120), nullable=True)
@@ -103,9 +123,9 @@ class Fan(Base):
 
 class Purchase(Base):
     __tablename__ = "purchases"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=_id)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    fan_id = Column(UUID(as_uuid=True), ForeignKey("fans.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(UUIDType(as_uuid=True), primary_key=True, default=_id)
+    tenant_id = Column(UUIDType(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    fan_id = Column(UUIDType(as_uuid=True), ForeignKey("fans.id", ondelete="CASCADE"), nullable=False, index=True)
     item = Column(String(200), nullable=False)
     amount = Column(Numeric(12, 2), nullable=False)
     purchased_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -115,8 +135,8 @@ class Message(Base):
     """Chat history (imported from portals or recorded when sent)."""
     __tablename__ = "messages"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    fan_id = Column(UUID(as_uuid=True), ForeignKey("fans.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(UUIDType(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    fan_id = Column(UUIDType(as_uuid=True), ForeignKey("fans.id", ondelete="CASCADE"), nullable=False, index=True)
     direction = Column(String(10), nullable=False)  # in (from fan) | out (from creator)
     body = Column(EncryptedText, nullable=False)
     ai_assisted = Column(Boolean, nullable=False, default=False)
@@ -126,15 +146,15 @@ class Message(Base):
 class Draft(Base):
     """AI-written reply proposal. Never leaves the system without an explicit approval."""
     __tablename__ = "drafts"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=_id)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    fan_id = Column(UUID(as_uuid=True), ForeignKey("fans.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(UUIDType(as_uuid=True), primary_key=True, default=_id)
+    tenant_id = Column(UUIDType(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    fan_id = Column(UUIDType(as_uuid=True), ForeignKey("fans.id", ondelete="CASCADE"), nullable=False, index=True)
     kind = Column(String(20), nullable=False, default="reply")  # reply | outreach
     reason = Column(String(200), nullable=True)
     body = Column(EncryptedText, nullable=True)
     status = Column(String(20), nullable=False, default=DraftStatus.PENDING.value)
     escalation_reason = Column(String(300), nullable=True)
-    decided_by = Column(UUID(as_uuid=True), nullable=True)
+    decided_by = Column(UUIDType(as_uuid=True), nullable=True)
     decided_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -143,9 +163,9 @@ class MemoryFact(Base):
     """Long-term memory about a fan. The text is PII-redacted before insert and encrypted at rest;
     only the lexical index (stemmed lexemes of the redacted text) and the embedding stay searchable."""
     __tablename__ = "memory_facts"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=_id)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    fan_id = Column(UUID(as_uuid=True), ForeignKey("fans.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(UUIDType(as_uuid=True), primary_key=True, default=_id)
+    tenant_id = Column(UUIDType(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    fan_id = Column(UUIDType(as_uuid=True), ForeignKey("fans.id", ondelete="CASCADE"), nullable=False, index=True)
     fact = Column(EncryptedText, nullable=False)
     source = Column(String(20), nullable=False, default="manual")  # manual | chat
     embedding = Column(JSONB, nullable=True)                        # list[float] from EmbeddingPort
@@ -159,7 +179,7 @@ class WebhookInbox(Base):
     __tablename__ = "webhook_inbox"
     __table_args__ = (UniqueConstraint("tenant_id", "portal", "event_id"),)
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(UUIDType(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     portal = Column(String(40), nullable=False)
     event_id = Column(String(200), nullable=False)
     received_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -169,8 +189,8 @@ class WebhookInbox(Base):
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    actor_id = Column(UUID(as_uuid=True), nullable=True)
+    tenant_id = Column(UUIDType(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_id = Column(UUIDType(as_uuid=True), nullable=True)
     action = Column(String(80), nullable=False)
     target = Column(String(200), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
