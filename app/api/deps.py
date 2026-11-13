@@ -16,7 +16,7 @@ bearer = HTTPBearer(auto_error=False)
 @dataclass
 class Ctx:
     user: User
-    tenant_id: uuid.UUID
+    tenant_id: str
     role: str
     db: Session
 
@@ -26,7 +26,8 @@ def ctx(creds: HTTPAuthorizationCredentials | None = Depends(bearer)):
         raise HTTPException(401, "Nicht angemeldet")
     try:
         c = decode_token(creds.credentials)
-        uid, tid = uuid.UUID(c["sub"]), uuid.UUID(c["tid"])
+        uid_obj, tid_obj = uuid.UUID(c["sub"]), uuid.UUID(c["tid"])
+        uid, tid = str(uid_obj), str(tid_obj)
     except (jwt.PyJWTError, ValueError, KeyError):
         raise HTTPException(401, "Token ungültig")
     db = new_session(tid, uid)

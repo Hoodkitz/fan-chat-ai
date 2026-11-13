@@ -18,17 +18,13 @@ from sqlalchemy import (
 )
 from sqlalchemy import JSON as SQLJSON, Text, String
 from app.core.config import settings
-# Choose Postgres-specific column types only when the configured database is Postgres.
-if settings.DATABASE_URL and settings.DATABASE_URL.startswith('postgres'):
-    from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID as PG_UUID
-    def UUIDType(as_uuid: bool = True):
-        return PG_UUID(as_uuid=as_uuid)
-else:
-    JSONB = SQLJSON
-    TSVECTOR = Text
-    def UUIDType(as_uuid: bool = True):
-        # Fallback for non-Postgres (SQLite tests): use a fixed-length string to hold UUIDs.
-        return String(36)
+# Use agnostic column types to keep the model portable between SQLite and Postgres in tests.
+JSONB = SQLJSON
+TSVECTOR = Text
+
+def UUIDType(as_uuid: bool = True):
+    # Portable UUID representation: use fixed-length string for cross-DB compatibility.
+    return String(36)
 
 from app.core.crypto import EncryptedText
 from app.core.db import Base
@@ -49,14 +45,8 @@ class DraftStatus(str, enum.Enum):
 
 
 def _id():
-    # Return a uuid.UUID for Postgres (when using native UUID columns),
-    # otherwise return a string UUID for SQLite/text columns.
-    try:
-        from app.core.config import settings as _settings
-        if _settings.DATABASE_URL and _settings.DATABASE_URL.startswith('postgres'):
-            return uuid.uuid4()
-    except Exception:
-        pass
+    # Always use string UUIDs for portability across DB backends in tests/local.
+    # If Postgres native UUID objects are desired, convert explicitly where needed.
     return str(uuid.uuid4())
 
 

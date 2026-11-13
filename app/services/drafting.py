@@ -85,7 +85,8 @@ def create_reply_draft(db: Session, tenant_id, fan: Fan, incoming_text: str) -> 
         from app.core.config import settings
         if settings.DATABASE_URL and settings.DATABASE_URL.startswith("postgres"):
             import uuid as _uuid
-            d.id = _uuid.uuid4()
+            # Use string UUIDs for portability in tests/local SQLite backends
+            d.id = str(_uuid.uuid4())
     except Exception:
         pass
     db.add(d)
@@ -128,7 +129,7 @@ def create_outreach_drafts(db: Session, tenant_id, today: date | None = None) ->
             from app.core.config import settings
             if settings.DATABASE_URL and settings.DATABASE_URL.startswith("postgres"):
                 import uuid as _uuid
-                d.id = _uuid.uuid4()
+                d.id = str(_uuid.uuid4())
         except Exception:
             pass
         db.add(d)

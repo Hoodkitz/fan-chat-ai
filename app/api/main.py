@@ -72,10 +72,10 @@ def register(req: RegisterIn):
     try:
         if db.query(User.id).filter(User.email == req.email.lower()).first():
             raise HTTPException(409, "E-Mail ist bereits registriert")
-        user = User(id=uuid.uuid4(), email=req.email.lower(), hashed_password=hash_password(req.password))
+        user = User(id=str(uuid.uuid4()), email=req.email.lower(), hashed_password=hash_password(req.password))
         db.add(user)
         db.flush()
-        tid = uuid.uuid4()
+        tid = str(uuid.uuid4())
         set_context(db, tid, user.id)
         db.add(Tenant(id=tid, name=req.display_name))
         db.flush()

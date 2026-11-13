@@ -1,12 +1,25 @@
 import os
 import uuid
+from pathlib import Path
+
+# Test environment: use an isolated SQLite DB and fake LLM provider
+HERE = Path(__file__).resolve().parents[1]
+DB_PATH = HERE / "fanchat_e2e.db"
+if DB_PATH.exists():
+    DB_PATH.unlink()
 
 os.environ["LLM_PROVIDER"] = "fake"
+os.environ["DATABASE_URL"] = f"sqlite:///{DB_PATH}"
+os.environ["MIGRATION_DATABASE_URL"] = f"sqlite:///{DB_PATH}"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.api.main import app  # noqa: E402
+# Ensure the DB schema exists for tests
+from app.core import db as _db
+from app.domain import models as _models
+_models.Base.metadata.create_all(_db.engine)
 
 PW = "Geheim12345"
 
